@@ -18,11 +18,17 @@ export interface BoundingBox {
   maxLon: number;
 }
 
+export type TripType = 'day_hike' | 'multi_day';
+
 export interface IntentProfile {
   location: string;
   date: string;
   difficulty: 'easy' | 'moderate' | 'hard' | 'expert';
+  tripType: TripType;
+  tripLengthDays: number;
   maxDistanceKm: number;
+  dailyDistanceKm: number;
+  searchDistanceKm: number;
   elevationPreference: 'flat' | 'rolling' | 'steep' | 'any';
   sceneryPreferences: string[];
   crowdPreference: 'low' | 'moderate' | 'any';
@@ -66,13 +72,17 @@ export interface ValidationResult {
 export interface TripPlan {
   recommendedTrailId: number;
   recommendedTrailName: string;
+  tripType: TripType;
+  tripLengthDays: number;
   whyChosen: string;
   departureTime: string;
   expectedReturnTime: string;
   estimatedDuration: string;
   driveTime: string;
+  dailyPlan: string[] | string;
   whatToBring: string[] | string;
   safetyNotes: string[] | string;
+  logisticsNotes: string[] | string;
   routeNotes: string;
   weatherSummary: string;
   conditionsSummary: string;
@@ -108,6 +118,73 @@ function parseFiniteNumber(value: unknown): number | null {
     return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
+}
+
+function inferTripLengthDays(raw: Record<string, unknown>, locationHint?: string): number {
+  const explicit =
+    parseFiniteNumber(raw.tripLengthDays) ??
+    parseFiniteNumber(raw.durationDays) ??
+    parseFiniteNumber(raw.days);
+  if (explicit != null) {
+    return clamp(Math.round(explicit), 1, 14);
+  }
+
+  const text = String(locationHint || '').toLowerCase();
+  const ranged = text.match(/(\d+)\s*-\s*(\d+)\s*day/);
+  if (ranged) {
+    return clamp(Math.round((Number(ranged[1]) + Number(ranged[2])) / 2), 1, 14);
+  }
+
+  const exact = text.match(/(\d+)\s*day/);
+  if (exact) {
+    return clamp(Number(exact[1]), 1, 14);
+  }
+
+  if (/\bovernight\b/.test(text)) return 2;
+  if (/\bbackpack(?:ing)?\b/.test(text)) return 2;
+  return 1;
+}
+
+function inferTripType(raw: Record<string, unknown>, tripLengthDays: number, locationHint?: string): TripType {
+  if (raw.tripType === 'multi_day' || raw.tripType === 'day_hike') {
+    return raw.tripType;
+  }
+
+  const text = String(locationHint || '').toLowerCase();
+  if (tripLengthDays > 1 || /\bovernight\b|\bbackpack(?:ing)?\b/.test(text)) {
+    return 'multi_day';
+  }
+  return 'day_hike';
+}
+
+function deriveSearchDistanceKm(
+  tripType: TripType,
+  tripLengthDays: number,
+  totalDistanceKm: number,
+  rawSearchDistanceKm?: unknown,
+  rawDailyDistanceKm?: unknown
+): { dailyDistanceKm: number; searchDistanceKm: number } {
+  if (tripType === 'day_hike') {
+    return {
+      dailyDistanceKm: totalDistanceKm,
+      searchDistanceKm: totalDistanceKm,
+    };
+  }
+
+  const requestedDailyDistance =
+    parseFiniteNumber(rawDailyDistanceKm) ?? (tripLengthDays > 0 ? totalDistanceKm / tripLengthDays : totalDistanceKm);
+  const dailyDistanceKm = clamp(requestedDailyDistance, 1, 40);
+  const requestedSearchDistance = parseFiniteNumber(rawSearchDistanceKm);
+  const searchDistanceKm = clamp(
+    requestedSearchDistance ?? Math.max(6, Math.min(totalDistanceKm, Math.max(10, dailyDistanceKm * 1.5))),
+    6,
+    Math.max(6, totalDistanceKm)
+  );
+
+  return {
+    dailyDistanceKm,
+    searchDistanceKm,
+  };
 }
 
 function fallbackRegionForLocation(locationHint: string | undefined): {
@@ -220,7 +297,11 @@ function buildDefaultIntentProfile(reasoning: string, locationHint?: string): In
     location: region.location,
     date: 'today',
     difficulty: 'moderate',
+    tripType: 'day_hike',
+    tripLengthDays: 1,
     maxDistanceKm: 10,
+    dailyDistanceKm: 10,
+    searchDistanceKm: 10,
     elevationPreference: 'any',
     sceneryPreferences: ['forest', 'mountain'],
     crowdPreference: 'any',
@@ -252,7 +333,16 @@ function normalizeIntentProfile(raw: unknown, locationHint?: string): IntentProf
   );
 
   const maxDistanceKm = clamp(parseFiniteNumber(data.maxDistanceKm) ?? fallback.maxDistanceKm, 1, 80);
-  const bbox = normalizeBBox(data.bbox, region.bbox, maxDistanceKm);
+  const tripLengthDays = inferTripLengthDays(data, locationHint);
+  const tripType = inferTripType(data, tripLengthDays, locationHint);
+  const distanceTargets = deriveSearchDistanceKm(
+    tripType,
+    tripLengthDays,
+    maxDistanceKm,
+    data.searchDistanceKm,
+    data.dailyDistanceKm
+  );
+  const bbox = normalizeBBox(data.bbox, region.bbox, distanceTargets.searchDistanceKm);
 
   const difficulty =
     data.difficulty === 'easy' ||
@@ -296,7 +386,11 @@ function normalizeIntentProfile(raw: unknown, locationHint?: string): IntentProf
     location: typeof data.location === 'string' && data.location.trim() ? data.location.trim() : region.location,
     date: typeof data.date === 'string' && data.date.trim() ? data.date.trim() : fallback.date,
     difficulty,
+    tripType,
+    tripLengthDays,
     maxDistanceKm,
+    dailyDistanceKm: distanceTargets.dailyDistanceKm,
+    searchDistanceKm: distanceTargets.searchDistanceKm,
     elevationPreference,
     sceneryPreferences: sceneryPreferences.length > 0 ? sceneryPreferences : fallback.sceneryPreferences,
     crowdPreference,
@@ -341,7 +435,11 @@ Extract and return a JSON object with these fields:
   "location": "specific place/region (if not specified, pick a beautiful hiking destination)",
   "date": "YYYY-MM-DD or 'today' or 'tomorrow'",
   "difficulty": "easy" | "moderate" | "hard" | "expert",
+  "tripType": "day_hike" | "multi_day",
+  "tripLengthDays": number,
   "maxDistanceKm": number (convert miles to km if needed. 1 mile = 1.60934 km). This is the user's desired TOTAL hike length for the outing (out-and-back, loop, or one-way as they described),
+  "dailyDistanceKm": number (for multi-day trips, estimate a realistic average daily mileage in km; for day hikes it can match maxDistanceKm),
+  "searchDistanceKm": number (for multi-day trips, set this to a substantial route-discovery target rather than the full trip total),
   "elevationPreference": "flat" | "rolling" | "steep" | "any",
   "sceneryPreferences": ["lake", "forest", "mountain", "waterfall", "ridge", "meadow", "river", etc.],
   "crowdPreference": "low" | "moderate" | "any",
@@ -356,10 +454,10 @@ Extract and return a JSON object with these fields:
   "followUpQuestions": ["any clarifying questions you would ask, max 2"]
 }
 
-For the bbox: Make it proportional to the desired hike distance. For 10+ km hikes, use 0.15-0.3 degree spread. For shorter walks, 0.05-0.1.
+For the bbox: Make it proportional to the route-discovery target, not the full backpacking trip total. For 10+ km route discovery use about 0.15-0.3 degree spread. For shorter walks, 0.05-0.1. Avoid giant statewide boxes for multi-day trips.
 If no location specified, choose a spectacular hiking destination and explain why.
 
-maxDistanceKm must reflect the full hike the user asked for (e.g. "10 mile hike" -> ~16 km). Do not understate this number.
+maxDistanceKm must reflect the full hike or backpacking trip the user asked for (e.g. "10 mile hike" -> ~16 km, "3 day backpacking trip around 30 miles" -> ~48 km). Do not understate this number.
 
 Respond ONLY with valid JSON.`;
 
@@ -393,10 +491,18 @@ export function fallbackResearchCandidates(trailsRaw: any[]): TrailCandidate[] {
   }));
 }
 
-export function fallbackValidationResults(candidates: TrailCandidate[]): ValidationResult[] {
+export function fallbackValidationResults(
+  candidates: TrailCandidate[],
+  intent?: Pick<IntentProfile, 'tripType' | 'maxDistanceKm' | 'searchDistanceKm'>
+): ValidationResult[] {
+  const targetKm =
+    intent?.tripType === 'multi_day'
+      ? intent.searchDistanceKm
+      : intent?.maxDistanceKm ?? 1;
+
   return candidates.map((c, i) => {
     const dist = c.distanceKm ?? 0;
-    const ratio = intentRatio(dist, 1);
+    const ratio = intentRatio(dist, targetKm);
     return {
       trailId: c.trailId,
       trailName: c.trailName,
@@ -406,7 +512,16 @@ export function fallbackValidationResults(candidates: TrailCandidate[]): Validat
         dist > 0 ? `Mapped trail length available (${dist.toFixed(1)} km).` : 'Basic trail data available.',
         'Fallback validation used because model output was incomplete.',
       ],
-      warnings: dist > 0 ? [] : ['Trail length estimate is limited.'],
+      warnings:
+        dist <= 0
+          ? ['Trail length estimate is limited.']
+          : ratio < 0.55
+            ? [
+                intent?.tripType === 'multi_day'
+                  ? 'Mapped route length is shorter than the desired multi-day discovery target.'
+                  : 'Mapped route length is shorter than the requested hike distance.',
+              ]
+            : [],
       risks: ['Review current conditions before you go.'],
       isRecommended: i < 3,
     };
@@ -439,7 +554,7 @@ ${JSON.stringify(intent, null, 2)}
 Here are candidate trails from OpenStreetMap:
 ${JSON.stringify(trailSummary, null, 2)}
 
-CRITICAL LENGTH RULE: intent.maxDistanceKm is the user's desired total hike distance. Each trail's distanceKm is the length of the mapped OSM geometry (full route relation when available, otherwise a named way segment). If distanceKm is far below maxDistanceKm (e.g. under ~35% of maxDistanceKm), treat as a poor length match unless tags indicate trailscout_source osm_relation and the geometry plausibly matches the request. Prefer trails with distanceKm reasonably close to maxDistanceKm (roughly 50%–130%). Mention length mismatch honestly in matchExplanation when the trail is much shorter than requested.
+CRITICAL LENGTH RULE: intent.maxDistanceKm is the user's desired TOTAL outing distance. intent.searchDistanceKm is the route-discovery target that should guide matching, especially for multi-day backpacking trips. Each trail's distanceKm is the length of the mapped OSM geometry (full route relation when available, otherwise a named way segment). For day hikes, compare primarily to intent.maxDistanceKm. For multi-day trips, compare primarily to intent.searchDistanceKm, while noting that the full trip may extend beyond the mapped geometry. Mention length mismatch honestly in matchExplanation when the trail is much shorter than the requested outing or too small to support a multi-day plan.
 
 When present, use elevationGainM and elevationLossM (meters, sampled along the trail: USGS 3DEP in the United States, otherwise coarse global DEM) in match explanations and difficulty context.
 
@@ -490,7 +605,7 @@ ${JSON.stringify(intent, null, 2)}
 Candidate trails from Research Agent:
 ${JSON.stringify(candidates, null, 2)}
 
-Each candidate may include distanceKm (mapped OpenStreetMap path length in km). Compare distanceKm to intent.maxDistanceKm. If distanceKm is far below maxDistanceKm, lower overallFit, add warnings, and note the mismatch in passedChecks or warnings. If distanceKm is missing, infer cautiously from trailName and matchExplanation.
+Each candidate may include distanceKm (mapped OpenStreetMap path length in km). For day hikes compare distanceKm to intent.maxDistanceKm. For multi-day trips compare first to intent.searchDistanceKm, while also considering whether the trail system seems capable of supporting the total trip distance intent.maxDistanceKm. If distanceKm is far below the relevant target, lower overallFit, add warnings, and note the mismatch. If distanceKm is missing, infer cautiously from trailName and matchExplanation.
 
 For each trail, perform these checks:
 - Distance appropriate relative to maxDistanceKm (mapped OSM length vs user's desired total)?
@@ -522,7 +637,7 @@ Respond ONLY with valid JSON array.`;
     const text = result.response.text();
     const parsed = JSON.parse(cleanJsonResponse(text));
     if (!Array.isArray(parsed) || parsed.length === 0) {
-      return fallbackValidationResults(candidates);
+      return fallbackValidationResults(candidates, intent);
     }
 
     const candidateIds = new Set(candidates.map((c) => c.trailId));
@@ -557,7 +672,7 @@ Respond ONLY with valid JSON array.`;
       .filter((item): item is ValidationResult => item != null);
 
     if (normalized.length === 0) {
-      return fallbackValidationResults(candidates);
+      return fallbackValidationResults(candidates, intent);
     }
 
     const missingCandidates = candidates.filter(
@@ -565,7 +680,7 @@ Respond ONLY with valid JSON array.`;
     );
 
     if (missingCandidates.length > 0) {
-      normalized.push(...fallbackValidationResults(missingCandidates));
+      normalized.push(...fallbackValidationResults(missingCandidates, intent));
     }
 
     if (!normalized.some((item) => item.isRecommended) && normalized.length > 0) {
@@ -575,7 +690,7 @@ Respond ONLY with valid JSON array.`;
     return normalized;
   } catch (error) {
     console.error('[Validation Agent] Failed:', error);
-    return fallbackValidationResults(candidates);
+    return fallbackValidationResults(candidates, intent);
   }
 }
 
@@ -607,13 +722,17 @@ Return a JSON OBJECT:
 {
   "recommendedTrailId": number,
   "recommendedTrailName": "string",
+  "tripType": "day_hike" | "multi_day",
+  "tripLengthDays": number,
   "whyChosen": "2-3 sentences explaining why this is THE best choice",
   "departureTime": "HH:MM AM/PM - when to leave home",
   "expectedReturnTime": "HH:MM AM/PM",
-  "estimatedDuration": "Xh Ym on trail",
+  "estimatedDuration": "For day hikes: Xh Ym on trail. For multi-day trips: total trip duration like '3 days / 2 nights'",
   "driveTime": "estimated one-way drive",
+  "dailyPlan": ["For multi-day trips, one practical itinerary line per day. For day hikes, use 1 concise outing summary line."],
   "whatToBring": ["List of 4-6 specific items"],
   "safetyNotes": ["2-3 specific safety warnings"],
+  "logisticsNotes": ["2-4 notes about permits, campsites, water, shuttles, or trailhead logistics"],
   "routeNotes": "2-3 sentences about the route",
   "weatherSummary": "Expected conditions (e.g. Partly cloudy, 55°F)",
   "conditionsSummary": "Trail conditions assessment (e.g. Well-maintained, likely wet)",
@@ -625,6 +744,8 @@ Return a JSON OBJECT:
   "calendarDescription": "Summary for calendar event",
   "shareableSummary": "Text summary for sharing with friends"
 }
+
+If intent.tripType is "multi_day", write this as a backpacking plan rather than a long day hike. Use realistic overnight logistics, a multi-day timeline, backpacking gear, and a trip-wide return time.
 
 Respond ONLY with valid JSON. Do not use N/A. Provide realistic values.`;
 
@@ -640,8 +761,12 @@ Respond ONLY with valid JSON. Do not use N/A. Provide realistic values.`;
       return [];
     };
 
+    plan.tripType = plan.tripType === 'multi_day' ? 'multi_day' : intent.tripType;
+    plan.tripLengthDays = clamp(parseFiniteNumber(plan.tripLengthDays) ?? intent.tripLengthDays, 1, 14);
+    plan.dailyPlan = ensureArray(plan.dailyPlan);
     plan.whatToBring = ensureArray(plan.whatToBring);
     plan.safetyNotes = ensureArray(plan.safetyNotes);
+    plan.logisticsNotes = ensureArray(plan.logisticsNotes);
     plan.packingChecklist = ensureArray(plan.packingChecklist);
 
     return plan;
@@ -650,22 +775,47 @@ Respond ONLY with valid JSON. Do not use N/A. Provide realistic values.`;
     return {
       recommendedTrailId: topCandidate.trailId,
       recommendedTrailName: topCandidate.trailName,
+      tripType: intent.tripType,
+      tripLengthDays: intent.tripLengthDays,
       whyChosen: topCandidate.matchExplanation,
       departureTime: '8:00 AM',
-      expectedReturnTime: '1:00 PM',
-      estimatedDuration: '3-4 hours',
+      expectedReturnTime: intent.tripType === 'multi_day' ? '6:00 PM on final day' : '1:00 PM',
+      estimatedDuration: intent.tripType === 'multi_day' ? `${intent.tripLengthDays} days` : '3-4 hours',
       driveTime: topCandidate.estimatedDriveTime,
-      whatToBring: ['Water (2L)', 'Snacks', 'Sunscreen', 'Rain layer', 'First aid kit'],
+      dailyPlan:
+        intent.tripType === 'multi_day'
+          ? Array.from({ length: intent.tripLengthDays }, (_, i) =>
+              i === 0
+                ? `Day 1: Drive in, start hiking early, and make steady progress toward a legal campsite.`
+                : i === intent.tripLengthDays - 1
+                  ? `Day ${i + 1}: Break camp early, complete the final miles, and return before evening weather builds.`
+                  : `Day ${i + 1}: Cover a moderate day of trail with time for water, weather, and camp setup.`
+            )
+          : ['Drive to the trailhead, hike the recommended route, and return the same day.'],
+      whatToBring:
+        intent.tripType === 'multi_day'
+          ? ['Water treatment', 'Shelter system', 'Insulation layers', 'Headlamp', 'First aid kit', 'Food for each day']
+          : ['Water (2L)', 'Snacks', 'Sunscreen', 'Rain layer', 'First aid kit'],
       safetyNotes: ['Tell someone your plan', 'Check weather before departing'],
+      logisticsNotes:
+        intent.tripType === 'multi_day'
+          ? ['Confirm overnight camping rules before departure.', 'Identify reliable water sources and backup campsites.']
+          : ['Arrive early enough to secure parking at the trailhead.'],
       routeNotes: 'Follow the main trail. Watch for markers.',
       weatherSummary: topCandidate.weatherForecast,
       conditionsSummary: 'Check recent reports for current conditions.',
       backupTrailId: backupCandidate?.trailId || 0,
       backupTrailName: backupCandidate?.trailName || 'None',
       backupReason: 'If primary trail is too crowded or conditions deteriorate.',
-      packingChecklist: ['Water', 'Snacks', 'Map', 'Sunscreen', 'First aid', 'Phone (charged)'],
-      calendarTitle: `Hike: ${topCandidate.trailName}`,
-      calendarDescription: `Trail: ${topCandidate.trailName}\nDuration: ~3-4h\n${topCandidate.matchExplanation}`,
+      packingChecklist:
+        intent.tripType === 'multi_day'
+          ? ['Pack', 'Shelter', 'Sleep system', 'Food', 'Water treatment', 'Map', 'Headlamp', 'Phone (charged)']
+          : ['Water', 'Snacks', 'Map', 'Sunscreen', 'First aid', 'Phone (charged)'],
+      calendarTitle: intent.tripType === 'multi_day' ? `Backpacking: ${topCandidate.trailName}` : `Hike: ${topCandidate.trailName}`,
+      calendarDescription:
+        intent.tripType === 'multi_day'
+          ? `Trail: ${topCandidate.trailName}\nTrip length: ${intent.tripLengthDays} days\n${topCandidate.matchExplanation}`
+          : `Trail: ${topCandidate.trailName}\nDuration: ~3-4h\n${topCandidate.matchExplanation}`,
       shareableSummary: `Heading to ${topCandidate.trailName}! ${topCandidate.matchExplanation}`
     };
   }
@@ -693,7 +843,7 @@ export function intentToLegacyPrefs(intent: IntentProfile): RecommendationPrefer
   };
   return {
     difficulty: diffMap[intent.difficulty] || 'intermediate',
-    maxDistance: intent.maxDistanceKm,
+    maxDistance: intent.searchDistanceKm,
     terrain: [],
     features: intent.sceneryPreferences,
     reasoning: intent.reasoning,

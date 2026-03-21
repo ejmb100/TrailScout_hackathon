@@ -255,6 +255,7 @@ export default function App() {
       // ── Agent 1: Intent ──────────────────────────────────────────
       setAgentStage('intent');
       const profile = await runIntentAgent(query);
+      const isMultiDay = profile.tripType === 'multi_day';
       setIntentProfile(profile);
       setIntentSummary(profile.reasoning);
 
@@ -265,7 +266,7 @@ export default function App() {
       setHikeForecast(forecast);
 
       // ── Fetch trails from OSM (between agents) ──────────────────
-      const widenedBBox = widenBBox(bbox, 2.25);
+      const widenedBBox = widenBBox(bbox, isMultiDay ? 1.4 : 2.25);
       const {
         trails: rawTrails,
         overpassUnavailable,
@@ -281,9 +282,11 @@ export default function App() {
       );
 
       const legacyPrefs = intentToLegacyPrefs(profile);
-      const scored = scoreAndFilterTrails(rawTrails, legacyPrefs).slice(0, 20);
+      const scored = scoreAndFilterTrails(rawTrails, legacyPrefs).slice(0, isMultiDay ? 10 : 20);
 
-      const withElevation = await enrichTrailsWithElevation(scored);
+      const withElevation = await enrichTrailsWithElevation(scored, {
+        concurrency: isMultiDay ? 4 : 3,
+      });
 
       // Enrich with distance (horizontal)
       const enriched = withElevation.map(t => ({
@@ -344,14 +347,14 @@ export default function App() {
       });
       setCandidates(finalCandidates);
       setResearchSummary(
-        `Found ${finalCandidates.length} strong candidates in ${profile.estimatedRegionName}${partialResults ? ' using partial OSM data' : ''}. Top match: ${finalCandidates[0]?.trailName || 'N/A'} (${finalCandidates[0]?.matchScore || 0}%).`
+        `Found ${finalCandidates.length} strong ${isMultiDay ? 'backpacking' : 'hiking'} candidates in ${profile.estimatedRegionName}${partialResults ? ' using partial OSM data' : ''}. Top match: ${finalCandidates[0]?.trailName || 'N/A'} (${finalCandidates[0]?.matchScore || 0}%).`
       );
 
       // ── Agent 3: Validation ──────────────────────────────────────
       setAgentStage('validation');
       const validationResults = await runValidationAgent(profile, finalCandidates);
       const finalValidations =
-        validationResults.length > 0 ? validationResults : fallbackValidationResults(finalCandidates);
+        validationResults.length > 0 ? validationResults : fallbackValidationResults(finalCandidates, profile);
       setValidations(finalValidations);
       const recommended = finalValidations.filter(v => v.isRecommended).length;
       const topFit = finalValidations[0]?.overallFit || 'unknown';
@@ -365,7 +368,11 @@ export default function App() {
       
       const plan = await runActionAgent(profile, topCandidate, topValidation, backupCandidate);
       setTripPlan(plan);
-      setActionSummary(`Trip plan ready: Depart ${plan.departureTime}, return by ${plan.expectedReturnTime}. ${plan.whatToBring.length} items to bring.`);
+      setActionSummary(
+        plan.tripType === 'multi_day'
+          ? `Backpacking plan ready: ${plan.tripLengthDays} days, depart ${plan.departureTime}, finish by ${plan.expectedReturnTime}.`
+          : `Trip plan ready: Depart ${plan.departureTime}, return by ${plan.expectedReturnTime}. ${plan.whatToBring.length} items to bring.`
+      );
 
       // ── Complete ─────────────────────────────────────────────────
       setAgentStage('complete');
@@ -713,14 +720,24 @@ export default function App() {
               </p>
               {intentProfile && intentProfile.maxDistanceKm > 0 && (
                 <p className="text-offwhite/35 text-sm mt-3 max-w-xl mx-auto">
-                  Your target hike length:{' '}
+                  Your target {intentProfile.tripType === 'multi_day' ? 'trip length' : 'hike length'}:{' '}
                   <span className="text-offwhite/60 font-semibold tabular-nums">
                     ~{intentProfile.maxDistanceKm.toFixed(1)} km
                   </span>{' '}
                   <span className="text-offwhite/30">
                     (~{(intentProfile.maxDistanceKm * 0.621371).toFixed(1)} mi)
                   </span>
-                  . Trail lengths below are{' '}
+                  {intentProfile.tripType === 'multi_day' && (
+                    <>
+                      {' '}across{' '}
+                      <span className="text-offwhite/50">{intentProfile.tripLengthDays} days</span>
+                      {' '}with a route-discovery target near{' '}
+                      <span className="text-offwhite/60 font-semibold tabular-nums">
+                        {intentProfile.searchDistanceKm.toFixed(1)} km
+                      </span>.
+                    </>
+                  )}
+                  {' '}Trail lengths below are{' '}
                   <span className="text-offwhite/50">mapped OSM geometry</span> (route or segment), not always a full loop.
                 </p>
               )}
@@ -816,11 +833,13 @@ export default function App() {
                   className="gradient-orange text-navy px-8 py-4 rounded-2xl font-bold text-lg hover:shadow-lg hover:shadow-orange/20 transition-all inline-flex items-center gap-3 glow-orange"
                 >
                   <Zap className="w-5 h-5" />
-                  View Full Trip Plan
+                  {tripPlan.tripType === 'multi_day' ? 'View Full Backpacking Plan' : 'View Full Trip Plan'}
                   <ArrowRight className="w-5 h-5" />
                 </button>
                 <p className="text-offwhite/20 text-xs mt-3">
-                  Includes departure time, packing list, calendar event, and backup option
+                  {tripPlan.tripType === 'multi_day'
+                    ? 'Includes day-by-day itinerary, backpacking checklist, logistics, and backup option'
+                    : 'Includes departure time, packing list, calendar event, and backup option'}
                 </p>
               </motion.div>
             )}
@@ -858,6 +877,7 @@ export default function App() {
                   candidate={candidate}
                   validation={validation}
                   trailIndex={selectedTrailIndex}
+                  intentProfile={intentProfile ?? undefined}
                   targetHikeKm={intentProfile?.maxDistanceKm}
                   onBack={() => {
                     setScreen('results');

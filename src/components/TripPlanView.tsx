@@ -15,17 +15,18 @@ import {
   CheckCircle2,
   AlertTriangle,
   Compass,
-  Mountain,
   ArrowLeft,
   Star,
   Navigation,
   Package,
   TrendingUp,
   TrendingDown,
+  Tent,
 } from 'lucide-react';
-import type { TripPlan, TrailCandidate, ValidationResult } from '../services/geminiService';
+import type { IntentProfile, TripPlan, TrailCandidate, ValidationResult } from '../services/geminiService';
 import type { TrailData } from '../services/osmService';
 import { calculateDistance } from '../utils/trailScoring';
+import MapContainer from './MapContainer';
 
 // Same curated images as ResultCard
 const trailImages = [
@@ -42,6 +43,7 @@ interface TripPlanViewProps {
   candidate: TrailCandidate;
   validation: ValidationResult;
   trailIndex: number;
+  intentProfile?: IntentProfile;
   /** User's desired hike length from intent (km), for comparison to mapped geometry. */
   targetHikeKm?: number;
   onBack: () => void;
@@ -53,6 +55,7 @@ const TripPlanView: React.FC<TripPlanViewProps> = ({
   candidate,
   validation,
   trailIndex,
+  intentProfile,
   targetHikeKm,
   onBack,
 }) => {
@@ -63,12 +66,26 @@ const TripPlanView: React.FC<TripPlanViewProps> = ({
 
   const distKm = calculateDistance(trail.path);
   const imageUrl = trailImages[trailIndex % trailImages.length];
+  const checklistItems = Array.isArray(plan.packingChecklist) ? plan.packingChecklist : [];
+  const dailyPlan = Array.isArray(plan.dailyPlan) ? plan.dailyPlan : [];
+  const logisticsNotes = Array.isArray(plan.logisticsNotes) ? plan.logisticsNotes : [];
+  const isMultiDay = plan.tripType === 'multi_day' || intentProfile?.tripType === 'multi_day';
+  const tripLengthDays = Math.max(plan.tripLengthDays || intentProfile?.tripLengthDays || 1, 1);
+  const bringItems = checklistItems.length > 0
+    ? checklistItems.slice(0, 6)
+    : Array.isArray(plan.whatToBring)
+      ? plan.whatToBring
+      : [];
 
   // Generate .ics calendar event
   const handleAddCalendar = () => {
     const now = new Date();
     const startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 7, 0);
     const endDate = new Date(startDate.getTime() + 5 * 60 * 60 * 1000);
+    if (isMultiDay) {
+      endDate.setDate(startDate.getDate() + tripLengthDays - 1);
+      endDate.setHours(18, 0, 0, 0);
+    }
     
     const formatDate = (d: Date) => d.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
     
@@ -116,19 +133,30 @@ END:VCALENDAR`;
     md += `- **Return:** ${plan.expectedReturnTime}\n`;
     md += `- **Duration:** ${plan.estimatedDuration}\n`;
     md += `- **Drive:** ${plan.driveTime}\n`;
+    md += `- **Trip type:** ${isMultiDay ? `${tripLengthDays} day backpacking trip` : 'Day hike'}\n`;
     if (trail.elevationGainM != null && trail.elevationLossM != null) {
       md += `- **Elevation gain / loss:** ${trail.elevationGainM} m / ${trail.elevationLossM} m (DEM along trail)\n`;
     }
     md += `- **Mapped OSM path:** ${distKm.toFixed(1)} km (${(distKm * 0.621371).toFixed(1)} mi)\n`;
     if (targetHikeKm != null && targetHikeKm > 0) {
-      md += `- **Your target length:** ~${targetHikeKm.toFixed(1)} km\n`;
+      md += `- **Your target length:** ~${targetHikeKm.toFixed(1)} km${isMultiDay ? ` across ${tripLengthDays} days` : ''}\n`;
     }
     md += `\n### Conditions\n`;
     md += `- **Weather:** ${plan.weatherSummary}\n`;
     md += `- **Trail:** ${plan.conditionsSummary}\n\n`;
+    if (dailyPlan.length > 0) {
+      md += `### Daily Plan\n`;
+      dailyPlan.forEach((item, i) => { md += `- Day ${i + 1}: ${item}\n`; });
+      md += `\n`;
+    }
     md += `### Route Notes\n${plan.routeNotes}\n\n`;
+    if (logisticsNotes.length > 0) {
+      md += `### Logistics\n`;
+      logisticsNotes.forEach(note => { md += `- ${note}\n`; });
+      md += `\n`;
+    }
     md += `### What to Bring\n`;
-    plan.whatToBring.forEach(item => { md += `- ${item}\n`; });
+    bringItems.forEach(item => { md += `- ${item}\n`; });
     md += `\n### Safety Notes\n`;
     plan.safetyNotes.forEach(note => { md += `- ⚠️ ${note}\n`; });
     md += `\n### Packing Checklist\n`;
@@ -210,7 +238,12 @@ END:VCALENDAR`;
           },
           { icon: Clock, label: 'Duration', value: plan.estimatedDuration, color: 'text-blue' },
           { icon: MapPin, label: 'Drive Time', value: plan.driveTime, color: 'text-purple' },
-          { icon: Sun, label: 'Depart', value: plan.departureTime, color: 'text-orange' },
+          {
+            icon: isMultiDay ? Tent : Sun,
+            label: isMultiDay ? 'Trip Length' : 'Depart',
+            value: isMultiDay ? `${tripLengthDays} day${tripLengthDays === 1 ? '' : 's'}` : plan.departureTime,
+            color: 'text-orange',
+          },
         ].map(({ icon: Icon, label, value, color }) => (
           <div key={label} className="glass-bright rounded-2xl p-4 text-center">
             <Icon className={`w-5 h-5 ${color} mx-auto mb-2`} />
@@ -226,13 +259,35 @@ END:VCALENDAR`;
           {/* Schedule card */}
           <div className="glass-bright rounded-2xl p-6">
             <h3 className="font-display font-bold text-lg text-offwhite mb-4 flex items-center gap-2">
-              <Clock className="w-5 h-5 text-teal" /> Trip Schedule
+              <Clock className="w-5 h-5 text-teal" /> {isMultiDay ? 'Trip Timeline' : 'Trip Schedule'}
             </h3>
             <div className="space-y-3">
-              <TimelineItem time={plan.departureTime} label="Leave home" icon="🚗" />
-              <TimelineItem time={`+${plan.driveTime}`} label="Arrive at trailhead" icon="🅿️" />
-              <TimelineItem time="" label={plan.routeNotes} icon="🥾" isNote />
-              <TimelineItem time={plan.expectedReturnTime} label="Back at car" icon="✅" />
+              {isMultiDay ? (
+                <>
+                  <TimelineItem
+                    time="Start"
+                    label={`Leave home at ${plan.departureTime} and reach the trailhead after about ${plan.driveTime}.`}
+                    icon="🚗"
+                  />
+                  {(dailyPlan.length > 0 ? dailyPlan : [plan.routeNotes]).map((item, i) => (
+                    <React.Fragment key={`${item}-${i}`}>
+                      <TimelineItem
+                        time={`Day ${i + 1}`}
+                        label={item}
+                        icon={i === tripLengthDays - 1 ? '🏁' : i === 0 ? '🥾' : '⛺'}
+                      />
+                    </React.Fragment>
+                  ))}
+                  <TimelineItem time="Finish" label={`Plan to be off trail by ${plan.expectedReturnTime}.`} icon="✅" />
+                </>
+              ) : (
+                <>
+                  <TimelineItem time={plan.departureTime} label="Leave home" icon="🚗" />
+                  <TimelineItem time={`+${plan.driveTime}`} label="Arrive at trailhead" icon="🅿️" />
+                  <TimelineItem time="" label={plan.routeNotes} icon="🥾" isNote />
+                  <TimelineItem time={plan.expectedReturnTime} label="Back at car" icon="✅" />
+                </>
+              )}
             </div>
           </div>
 
@@ -265,10 +320,25 @@ END:VCALENDAR`;
               {targetHikeKm != null && targetHikeKm > 0 && (
                 <>
                   {' '}
-                  · Your target ~{targetHikeKm.toFixed(1)} km. Real distance may differ if the trail continues
-                  off the mapped geometry.
+                  · Your target ~{targetHikeKm.toFixed(1)} km{isMultiDay ? ` across ${tripLengthDays} days` : ''}. Real distance may differ if the trail continues off the mapped geometry.
                 </>
               )}
+            </p>
+          </div>
+
+          {/* Trail map */}
+          <div className="glass-bright rounded-2xl p-6">
+            <h3 className="font-display font-bold text-lg text-offwhite mb-4 flex items-center gap-2">
+              <MapPin className="w-5 h-5 text-teal" /> Trail Map
+            </h3>
+            <div className="h-72 rounded-2xl overflow-hidden border border-white/10">
+              <MapContainer
+                trails={[{ ...trail, tags: { ...trail.tags, color: '#FF7D0F' } }]}
+                focusedTrailId={trail.id}
+              />
+            </div>
+            <p className="text-[11px] text-offwhite/40 mt-3">
+              Map is focused on the selected trail only.
             </p>
           </div>
 
@@ -327,20 +397,63 @@ END:VCALENDAR`;
 
         {/* Right column: Gear & Actions */}
         <div className="space-y-6">
-          {/* What to bring */}
+          {/* Action buttons */}
           <div className="glass-bright rounded-2xl p-6">
             <h3 className="font-display font-bold text-lg text-offwhite mb-4 flex items-center gap-2">
-              <Backpack className="w-5 h-5 text-orange" /> What to Bring
+              <CalendarPlus className="w-5 h-5 text-teal" /> Action Items
             </h3>
-            <div className="space-y-2">
-              {Array.isArray(plan.whatToBring) ? plan.whatToBring.map((item, i) => (
-                <div key={i} className="flex items-center gap-2 text-sm text-offwhite/70">
-                  <ChevronRight className="w-3 h-3 text-teal flex-shrink-0" />
-                  <span>{item}</span>
-                </div>
-              )) : (
-                <p className="text-sm text-offwhite/70 italic text-center">Standard day-hiking gear.</p>
-              )}
+            <div className="space-y-3">
+              <motion.button
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                onClick={handleAddCalendar}
+                className={`w-full flex items-center justify-center gap-2 px-6 py-4 rounded-2xl font-bold text-sm transition-all ${
+                  calendarAdded 
+                    ? 'bg-green/20 text-green border border-green/30' 
+                    : 'gradient-teal text-navy hover:shadow-lg glow-teal'
+                }`}
+              >
+                {calendarAdded ? <CheckCircle2 className="w-4 h-4" /> : <CalendarPlus className="w-4 h-4" />}
+                {calendarAdded ? 'Calendar Event Downloaded!' : 'Add to Calendar'}
+              </motion.button>
+
+              <motion.button
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                onClick={handleShare}
+                className={`w-full flex items-center justify-center gap-2 px-6 py-4 rounded-2xl font-bold text-sm transition-all ${
+                  shared
+                    ? 'bg-blue/20 text-blue border border-blue/30'
+                    : 'bg-blue/10 text-blue border border-blue/20 hover:bg-blue/20'
+                }`}
+              >
+                {shared ? <CheckCircle2 className="w-4 h-4" /> : <Share2 className="w-4 h-4" />}
+                {shared ? 'Shared!' : 'Share Plan'}
+              </motion.button>
+
+              <motion.button
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                onClick={() => setSaved(true)}
+                className={`w-full flex items-center justify-center gap-2 px-6 py-4 rounded-2xl font-bold text-sm transition-all ${
+                  saved
+                    ? 'bg-purple/20 text-purple border border-purple/30'
+                    : 'bg-purple/10 text-purple border border-purple/20 hover:bg-purple/20'
+                }`}
+              >
+                {saved ? <CheckCircle2 className="w-4 h-4" /> : <Bookmark className="w-4 h-4" />}
+                {saved ? 'Hike Saved!' : 'Save Hike'}
+              </motion.button>
+
+              <motion.button
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                onClick={handleDownload}
+                className="w-full flex items-center justify-center gap-2 px-6 py-4 rounded-2xl font-bold text-sm bg-white/5 text-offwhite/60 border border-white/10 hover:bg-white/10 transition-all"
+              >
+                <Download className="w-4 h-4" />
+                Download Full Plan
+              </motion.button>
             </div>
           </div>
 
@@ -361,6 +474,22 @@ END:VCALENDAR`;
             </div>
           </div>
 
+          {logisticsNotes.length > 0 && (
+            <div className="glass-bright rounded-2xl p-6">
+              <h3 className="font-display font-bold text-lg text-offwhite mb-4 flex items-center gap-2">
+                <Tent className="w-5 h-5 text-teal" /> Camp & Logistics
+              </h3>
+              <div className="space-y-2">
+                {logisticsNotes.map((note, i) => (
+                  <div key={i} className="flex items-start gap-2 text-sm text-offwhite/70">
+                    <ChevronRight className="w-3 h-3 text-teal mt-0.5 flex-shrink-0" />
+                    <span>{note}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Packing checklist toggle */}
           <div className="glass-bright rounded-2xl p-6">
             <button
@@ -372,6 +501,23 @@ END:VCALENDAR`;
               </h3>
               <ChevronRight className={`w-5 h-5 text-offwhite/40 transition-transform ${showChecklist ? 'rotate-90' : ''}`} />
             </button>
+            <div className="mt-4 pt-4 border-t border-white/10">
+              <div className="text-[10px] text-offwhite/40 uppercase tracking-wider mb-2 flex items-center gap-2">
+                <Backpack className="w-4 h-4 text-orange" /> What to Bring
+              </div>
+              {bringItems.length > 0 ? (
+                <div className="space-y-2">
+                  {bringItems.map((item, i) => (
+                    <div key={i} className="flex items-center gap-2 text-sm text-offwhite/70">
+                      <ChevronRight className="w-3 h-3 text-teal flex-shrink-0" />
+                      <span>{item}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-offwhite/70 italic text-center">Standard hiking essentials recommended.</p>
+              )}
+            </div>
             <AnimatePresence>
               {showChecklist && (
                 <motion.div
@@ -393,61 +539,6 @@ END:VCALENDAR`;
                 </motion.div>
               )}
             </AnimatePresence>
-          </div>
-
-          {/* Action buttons */}
-          <div className="space-y-3">
-            <motion.button
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
-              onClick={handleAddCalendar}
-              className={`w-full flex items-center justify-center gap-2 px-6 py-4 rounded-2xl font-bold text-sm transition-all ${
-                calendarAdded 
-                  ? 'bg-green/20 text-green border border-green/30' 
-                  : 'gradient-teal text-navy hover:shadow-lg glow-teal'
-              }`}
-            >
-              {calendarAdded ? <CheckCircle2 className="w-4 h-4" /> : <CalendarPlus className="w-4 h-4" />}
-              {calendarAdded ? 'Calendar Event Downloaded!' : 'Add to Calendar'}
-            </motion.button>
-
-            <motion.button
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
-              onClick={handleShare}
-              className={`w-full flex items-center justify-center gap-2 px-6 py-4 rounded-2xl font-bold text-sm transition-all ${
-                shared
-                  ? 'bg-blue/20 text-blue border border-blue/30'
-                  : 'bg-blue/10 text-blue border border-blue/20 hover:bg-blue/20'
-              }`}
-            >
-              {shared ? <CheckCircle2 className="w-4 h-4" /> : <Share2 className="w-4 h-4" />}
-              {shared ? 'Shared!' : 'Share Plan'}
-            </motion.button>
-
-            <motion.button
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
-              onClick={() => setSaved(true)}
-              className={`w-full flex items-center justify-center gap-2 px-6 py-4 rounded-2xl font-bold text-sm transition-all ${
-                saved
-                  ? 'bg-purple/20 text-purple border border-purple/30'
-                  : 'bg-purple/10 text-purple border border-purple/20 hover:bg-purple/20'
-              }`}
-            >
-              {saved ? <CheckCircle2 className="w-4 h-4" /> : <Bookmark className="w-4 h-4" />}
-              {saved ? 'Hike Saved!' : 'Save Hike'}
-            </motion.button>
-
-            <motion.button
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
-              onClick={handleDownload}
-              className="w-full flex items-center justify-center gap-2 px-6 py-4 rounded-2xl font-bold text-sm bg-white/5 text-offwhite/60 border border-white/10 hover:bg-white/10 transition-all"
-            >
-              <Download className="w-4 h-4" />
-              Download Full Plan
-            </motion.button>
           </div>
         </div>
       </div>

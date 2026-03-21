@@ -164,31 +164,45 @@ async function fetchElevationsForSamples(points: TrailPoint[]): Promise<number[]
   return fetchElevationsOpenElevation(points);
 }
 
-/** Adds elevationGainM / elevationLossM to each trail (best-effort; skips on API failure). */
-export async function enrichTrailsWithElevation(trails: TrailData[]): Promise<TrailData[]> {
-  const out: TrailData[] = [];
-
-  for (const trail of trails) {
-    if (trail.path.length < 2) {
-      out.push(trail);
-      continue;
-    }
-
-    const sampled = samplePathPoints(trail.path, MAX_SAMPLES_PER_TRAIL);
-    const elevations = await fetchElevationsForSamples(sampled);
-
-    if (!elevations) {
-      out.push({ ...trail });
-      continue;
-    }
-
-    const { gainM, lossM } = elevationGainLossM(elevations);
-    out.push({
-      ...trail,
-      elevationGainM: gainM,
-      elevationLossM: lossM,
-    });
+async function enrichSingleTrail(trail: TrailData): Promise<TrailData> {
+  if (trail.path.length < 2) {
+    return trail;
   }
 
+  const sampled = samplePathPoints(trail.path, MAX_SAMPLES_PER_TRAIL);
+  const elevations = await fetchElevationsForSamples(sampled);
+
+  if (!elevations) {
+    return { ...trail };
+  }
+
+  const { gainM, lossM } = elevationGainLossM(elevations);
+  return {
+    ...trail,
+    elevationGainM: gainM,
+    elevationLossM: lossM,
+  };
+}
+
+/** Adds elevationGainM / elevationLossM to each trail (best-effort; skips on API failure). */
+export async function enrichTrailsWithElevation(
+  trails: TrailData[],
+  options?: { maxTrails?: number; concurrency?: number }
+): Promise<TrailData[]> {
+  const selected = trails.slice(0, options?.maxTrails ?? trails.length);
+  const concurrency = Math.max(1, Math.min(options?.concurrency ?? 3, selected.length || 1));
+  const out = new Array<TrailData>(selected.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (true) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      if (currentIndex >= selected.length) return;
+      out[currentIndex] = await enrichSingleTrail(selected[currentIndex]);
+    }
+  }
+
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
   return out;
 }
