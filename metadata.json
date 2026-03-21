@@ -1,0 +1,5 @@
+{
+  "name": "TrailScout - Intent-Based Hiking Planner",
+  "description": "Find your perfect hike by describing your intent. TrailScout uses natural language to match you with trails that fit your mood, pace, and goals.",
+  "requestFramePermissions": []
+}

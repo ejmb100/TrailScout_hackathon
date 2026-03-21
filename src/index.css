@@ -1,0 +1,28 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Outfit", sans-serif;
+
+  --color-navy: #001A29;
+  --color-teal: #03B2BA;
+  --color-offwhite: #FCFFFF;
+  --color-orange: #FF7D0F;
+  --color-peach: #FFBF6E;
+
+  /* Mapping to existing names to minimize App.tsx changes where appropriate, 
+     but I will also update App.tsx for better brand alignment */
+  --color-forest: #001A29;
+  --color-sage: #03B2BA;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+  body {
+    @apply bg-offwhite text-forest font-sans;
+  }
+}
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Outfit:wght@500;600;700&display=swap');
