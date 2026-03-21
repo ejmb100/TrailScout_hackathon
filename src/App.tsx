@@ -8,7 +8,7 @@
  *   Agent 4: Action Agent (generates trip plan)
  */
 
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import {
   Compass,
   Map as MapIcon,
@@ -17,16 +17,14 @@ import {
   X,
   Mountain,
   Wind,
-  Dog,
-  Baby,
   Gauge,
   Ruler,
   Brain,
   Search,
   ShieldCheck,
   Zap,
-  ChevronDown,
   Sparkles,
+  CloudRain,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -42,17 +40,40 @@ import {
   runValidationAgent,
   runActionAgent,
   intentToLegacyPrefs,
+  isGeminiApiKeyConfigured,
+  fallbackResearchCandidates,
+  fallbackValidationResults,
   type IntentProfile,
   type TrailCandidate,
   type ValidationResult,
   type TripPlan,
 } from './services/geminiService';
-import { fetchTrailsInBBox, type TrailData } from './services/osmService';
+import { fetchTrailsWithFallback, type TrailData } from './services/osmService';
+import { enrichTrailsWithElevation } from './services/elevationService';
+import { fetchForecastForHike, type HikeForecast } from './services/weatherService';
+import { fetchApproxIpLocation, type ApproxIpLocation } from './services/ipGeoService';
 import { scoreAndFilterTrails, calculateDistance } from './utils/trailScoring';
 
 // ─── Screen types ─────────────────────────────────────────────────────
 
 type AppScreen = 'home' | 'workflow' | 'results' | 'plan';
+
+function widenBBox(
+  bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number },
+  factor: number
+) {
+  const centerLat = (bbox.minLat + bbox.maxLat) / 2;
+  const centerLon = (bbox.minLon + bbox.maxLon) / 2;
+  const halfLat = ((bbox.maxLat - bbox.minLat) / 2) * factor;
+  const halfLon = ((bbox.maxLon - bbox.minLon) / 2) * factor;
+
+  return {
+    minLat: Math.max(-85, centerLat - halfLat),
+    maxLat: Math.min(85, centerLat + halfLat),
+    minLon: Math.max(-180, centerLon - halfLon),
+    maxLon: Math.min(180, centerLon + halfLon),
+  };
+}
 
 // ─── Prompt chips ─────────────────────────────────────────────────────
 
@@ -62,16 +83,12 @@ const promptChips = [
   "Easy family hike near Portland with waterfalls, kid-friendly, under 4 miles",
   "I want a quiet forest trail near Asheville NC, no crowds, moderate difficulty",
   "Weekend day hike near Denver with wildflowers and mountain views, 8-10 miles",
+  "A ten mile hike in Colorado with mountain views, moderate difficulty",
+  "Day hike near Rocky Mountain National Park, 6–8 miles, alpine scenery",
 ];
 
-// ─── Quick filter options ─────────────────────────────────────────────
-
-interface QuickFilters {
-  difficulty: string;
-  dogFriendly: boolean;
-  kidFriendly: boolean;
-  maxDistance: string;
-}
+/** Shown in the search dropdown and as bottom chips — keep in sync for UX. */
+const allExamplePrompts = [...promptChips];
 
 // ─── Navbar ───────────────────────────────────────────────────────────
 
@@ -98,7 +115,6 @@ const Navbar: React.FC<{ onLogoClick: () => void }> = ({ onLogoClick }) => {
         {/* Desktop nav */}
         <div className="hidden md:flex items-center gap-6">
           <a href="#how-it-works" className="text-sm text-offwhite/50 hover:text-teal transition-colors">How it Works</a>
-          <a href="#features" className="text-sm text-offwhite/50 hover:text-teal transition-colors">Features</a>
           <div className="flex items-center gap-1.5 bg-teal/10 px-3 py-1.5 rounded-full border border-teal/20">
             <div className="w-1.5 h-1.5 rounded-full bg-teal animate-pulse" />
             <span className="text-[10px] text-teal font-semibold uppercase tracking-wider">4 Agents Online</span>
@@ -120,7 +136,6 @@ const Navbar: React.FC<{ onLogoClick: () => void }> = ({ onLogoClick }) => {
           >
             <div className="px-6 py-4 space-y-3">
               <a href="#how-it-works" className="block text-offwhite/60 py-2" onClick={() => setIsOpen(false)}>How it Works</a>
-              <a href="#features" className="block text-offwhite/60 py-2" onClick={() => setIsOpen(false)}>Features</a>
             </div>
           </motion.div>
         )}
@@ -139,13 +154,6 @@ export default function App() {
   
   // Input state
   const [intent, setIntent] = useState('');
-  const [quickFilters, setQuickFilters] = useState<QuickFilters>({
-    difficulty: '',
-    dogFriendly: false,
-    kidFriendly: false,
-    maxDistance: '',
-  });
-  const [showFilters, setShowFilters] = useState(false);
 
   // Agent pipeline state
   const [agentStage, setAgentStage] = useState<AgentStage>('idle');
@@ -165,21 +173,52 @@ export default function App() {
   // Error state
   const [error, setError] = useState('');
 
+  /** Open-Meteo forecast for hike area (set after intent). */
+  const [hikeForecast, setHikeForecast] = useState<HikeForecast | null>(null);
+  /** Coarse IP-based location for default map center (VPN may skew). */
+  const [approxUserLocation, setApproxUserLocation] = useState<ApproxIpLocation | null>(null);
+
   const resultsRef = useRef<HTMLDivElement>(null);
+  const searchShellRef = useRef<HTMLDivElement>(null);
+
+  /** Example-search panel: opens on input focus or explicit control (reliable vs. focus-only). */
+  const [examplesMenuOpen, setExamplesMenuOpen] = useState(false);
+
+  const intentSuggestions = useMemo(() => {
+    const q = intent.trim().toLowerCase();
+    if (q.length < 2) {
+      return allExamplePrompts.slice(0, 8);
+    }
+    const hits = allExamplePrompts.filter((p) => p.toLowerCase().includes(q));
+    return hits.length > 0 ? hits.slice(0, 8) : allExamplePrompts.slice(0, 5);
+  }, [intent]);
+
+  useEffect(() => {
+    if (!examplesMenuOpen) return;
+    const onPointerDownCapture = (e: PointerEvent) => {
+      const el = searchShellRef.current;
+      if (el && !el.contains(e.target as Node)) {
+        setExamplesMenuOpen(false);
+      }
+    };
+    document.addEventListener('pointerdown', onPointerDownCapture, true);
+    return () => document.removeEventListener('pointerdown', onPointerDownCapture, true);
+  }, [examplesMenuOpen]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchApproxIpLocation().then((loc) => {
+      if (!cancelled && loc) setApproxUserLocation(loc);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // ─── Build query with filters ─────────────────────────────────────
   
   const buildQuery = (): string => {
-    let query = intent.trim();
-    const additions: string[] = [];
-    if (quickFilters.difficulty) additions.push(`${quickFilters.difficulty} difficulty`);
-    if (quickFilters.dogFriendly) additions.push('dog-friendly');
-    if (quickFilters.kidFriendly) additions.push('kid-friendly');
-    if (quickFilters.maxDistance) additions.push(`max ${quickFilters.maxDistance}`);
-    if (additions.length > 0) {
-      query += `. Additional preferences: ${additions.join(', ')}.`;
-    }
-    return query;
+    return intent.trim();
   };
 
   // ─── Run the multi-agent pipeline ─────────────────────────────────
@@ -188,6 +227,13 @@ export default function App() {
     e.preventDefault();
     const query = buildQuery();
     if (!query) return;
+
+    if (!isGeminiApiKeyConfigured) {
+      setError(
+        'Missing Gemini API key. Add GEMINI_API_KEY or VITE_GEMINI_API_KEY to your .env file, then restart the dev server.'
+      );
+      return;
+    }
 
     setError('');
     setScreen('workflow');
@@ -200,6 +246,7 @@ export default function App() {
     setResearchSummary('');
     setValidationSummary('');
     setActionSummary('');
+    setHikeForecast(null);
 
     // Scroll to top
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -211,21 +258,61 @@ export default function App() {
       setIntentProfile(profile);
       setIntentSummary(profile.reasoning);
 
-      // ── Fetch trails from OSM (between agents) ──────────────────
       const bbox = profile.bbox;
-      const rawTrails = await fetchTrailsInBBox(bbox.minLat, bbox.minLon, bbox.maxLat, bbox.maxLon);
+      const wxLat = (bbox.minLat + bbox.maxLat) / 2;
+      const wxLon = (bbox.minLon + bbox.maxLon) / 2;
+      const forecast = await fetchForecastForHike(wxLat, wxLon, profile.date);
+      setHikeForecast(forecast);
+
+      // ── Fetch trails from OSM (between agents) ──────────────────
+      const widenedBBox = widenBBox(bbox, 2.25);
+      const {
+        trails: rawTrails,
+        overpassUnavailable,
+        hadRawOsmData,
+        rawElementCount,
+        filteredOutCount,
+        partialResults,
+      } = await fetchTrailsWithFallback(
+        widenedBBox.minLat,
+        widenedBBox.minLon,
+        widenedBBox.maxLat,
+        widenedBBox.maxLon
+      );
+
       const legacyPrefs = intentToLegacyPrefs(profile);
       const scored = scoreAndFilterTrails(rawTrails, legacyPrefs).slice(0, 20);
-      
-      // Enrich with distance
-      const enriched = scored.map(t => ({
+
+      const withElevation = await enrichTrailsWithElevation(scored);
+
+      // Enrich with distance (horizontal)
+      const enriched = withElevation.map(t => ({
         ...t,
         distanceKm: calculateDistance(t.path),
       }));
       setTrails(enriched);
+      console.info('[TrailScout] search pipeline counts', {
+        region: profile.estimatedRegionName,
+        rawElementCount,
+        rawTrails: rawTrails.length,
+        scored: scored.length,
+        enriched: enriched.length,
+        filteredOutCount,
+        overpassUnavailable,
+        partialResults,
+      });
 
       if (enriched.length === 0) {
-        setError('No trails found in this area. Try a different location or wider search.');
+        const noUsableTrailData = Boolean(hadRawOsmData) && rawTrails.length === 0;
+        setError(
+          overpassUnavailable
+            ? 'OpenStreetMap trail data is temporarily unavailable (servers busy). Please try again in a minute.'
+            : noUsableTrailData
+              ? 'OpenStreetMap returned map data here, but TrailScout could not turn it into hike suggestions yet. Try a nearby park, town, or well-known trail region.'
+              : rawTrails.length > 0
+                ? 'Trail data was found, but none of it survived filtering. Try a broader request or a shorter target distance.'
+                : 'No trails found in this area. Try a more specific location like a park, town, or trail region.'
+        );
         setAgentStage('idle');
         setScreen('home');
         return;
@@ -234,22 +321,47 @@ export default function App() {
       // ── Agent 2: Research ────────────────────────────────────────
       setAgentStage('research');
       const researchResults = await runResearchAgent(profile, enriched);
-      setCandidates(researchResults);
-      setResearchSummary(`Found ${researchResults.length} strong candidates in ${profile.estimatedRegionName}. Top match: ${researchResults[0]?.trailName || 'N/A'} (${researchResults[0]?.matchScore || 0}%).`);
+      const trailById = new Map(enriched.map((trail) => [trail.id, trail]));
+      const candidatesWithDist = researchResults
+        .map((c): TrailCandidate | null => {
+          const t = trailById.get(c.trailId);
+          if (!t) return null;
+          return {
+            ...c,
+            distanceKm: t.distanceKm ?? calculateDistance(t.path),
+          };
+        })
+        .filter((candidate): candidate is TrailCandidate => candidate != null);
+      const finalCandidates = (candidatesWithDist.length > 0
+        ? candidatesWithDist
+        : fallbackResearchCandidates(enriched)
+      ).map((candidate) => {
+        const trail = trailById.get(candidate.trailId);
+        return {
+          ...candidate,
+          distanceKm: candidate.distanceKm ?? trail?.distanceKm,
+        };
+      });
+      setCandidates(finalCandidates);
+      setResearchSummary(
+        `Found ${finalCandidates.length} strong candidates in ${profile.estimatedRegionName}${partialResults ? ' using partial OSM data' : ''}. Top match: ${finalCandidates[0]?.trailName || 'N/A'} (${finalCandidates[0]?.matchScore || 0}%).`
+      );
 
       // ── Agent 3: Validation ──────────────────────────────────────
       setAgentStage('validation');
-      const validationResults = await runValidationAgent(profile, researchResults);
-      setValidations(validationResults);
-      const recommended = validationResults.filter(v => v.isRecommended).length;
-      const topFit = validationResults[0]?.overallFit || 'unknown';
-      setValidationSummary(`${recommended} trails passed validation. Top trail rated "${topFit}" with ${validationResults[0]?.confidenceScore || 0}% confidence.`);
+      const validationResults = await runValidationAgent(profile, finalCandidates);
+      const finalValidations =
+        validationResults.length > 0 ? validationResults : fallbackValidationResults(finalCandidates);
+      setValidations(finalValidations);
+      const recommended = finalValidations.filter(v => v.isRecommended).length;
+      const topFit = finalValidations[0]?.overallFit || 'unknown';
+      setValidationSummary(`${recommended} trails passed validation. Top trail rated "${topFit}" with ${finalValidations[0]?.confidenceScore || 0}% confidence.`);
 
       // ── Agent 4: Action ──────────────────────────────────────────
       setAgentStage('action');
-      const topCandidate = researchResults[0];
-      const topValidation = validationResults[0];
-      const backupCandidate = researchResults.length > 1 ? researchResults[1] : undefined;
+      const topCandidate = finalCandidates[0];
+      const topValidation = finalValidations[0];
+      const backupCandidate = finalCandidates.length > 1 ? finalCandidates[1] : undefined;
       
       const plan = await runActionAgent(profile, topCandidate, topValidation, backupCandidate);
       setTripPlan(plan);
@@ -282,6 +394,7 @@ export default function App() {
   const goHome = () => {
     setScreen('home');
     setAgentStage('idle');
+    setHikeForecast(null);
   };
 
   // ═══════════════════════════════════════════════════════════════════
@@ -313,7 +426,7 @@ export default function App() {
       {screen === 'home' && (
         <>
           {/* Hero */}
-          <section className="relative min-h-screen flex items-center justify-center overflow-hidden">
+          <section className="relative min-h-screen overflow-x-hidden">
             {/* Background */}
             <div className="absolute inset-0 z-0">
               <img
@@ -331,7 +444,7 @@ export default function App() {
               backgroundSize: '40px 40px',
             }} />
 
-            <div className="relative z-10 max-w-5xl mx-auto px-6 text-center pt-24 pb-16">
+            <div className="relative z-10 max-w-5xl mx-auto px-6 text-center pt-28 pb-12 md:pb-16">
               <motion.div
                 initial={{ opacity: 0, y: 30 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -356,128 +469,107 @@ export default function App() {
                   validates conditions, and delivers an actionable trip plan.
                 </p>
 
-                {/* Search form */}
-                <form onSubmit={handleSearch} className="max-w-2xl mx-auto mb-6">
-                  <div className="glass rounded-2xl p-2 shadow-2xl">
-                    <div className="flex items-center gap-3">
-                      <div className="pl-4">
-                        <MapIcon className="text-offwhite/30 w-5 h-5" />
+                {approxUserLocation && (approxUserLocation.city || approxUserLocation.region) && (
+                  <p
+                    className="text-[11px] text-offwhite/25 max-w-xl mx-auto mb-6 -mt-6 leading-relaxed cursor-help"
+                    title="Approximate area from your network IP. VPNs and shared networks can be wrong. Used only to tune default map center before you search."
+                  >
+                    Approximate area:{' '}
+                    <span className="text-offwhite/40">
+                      {[approxUserLocation.city, approxUserLocation.region].filter(Boolean).join(', ')}
+                    </span>
+                  </p>
+                )}
+
+                {/* Search form + live suggestions */}
+                <div ref={searchShellRef} className="max-w-2xl mx-auto mb-6 relative z-30">
+                  <form onSubmit={handleSearch}>
+                    <div className="glass rounded-2xl p-2 shadow-2xl">
+                      <div className="flex flex-col gap-1">
+                        <div className="flex items-center gap-2 sm:gap-3">
+                          <div className="pl-3 sm:pl-4 shrink-0">
+                            <MapIcon className="text-offwhite/30 w-5 h-5" />
+                          </div>
+                          <input
+                            type="text"
+                            id="hiking-intent-input"
+                            value={intent}
+                            onChange={(e) => setIntent(e.target.value)}
+                            onFocus={() => setExamplesMenuOpen(true)}
+                            autoComplete="off"
+                            placeholder="e.g. A moderate hike with lake views near Seattle, dog-friendly..."
+                            className="min-w-0 flex-1 bg-transparent border-none text-offwhite placeholder:text-offwhite/35 focus:ring-0 focus:outline-none text-base py-3 sm:py-4"
+                            aria-autocomplete="list"
+                            aria-controls="intent-suggestion-list"
+                            aria-expanded={examplesMenuOpen && screen === 'home'}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setExamplesMenuOpen((o) => !o)}
+                            className="shrink-0 text-[11px] sm:text-xs font-semibold uppercase tracking-wide text-teal/90 hover:text-teal px-2 py-2 rounded-lg border border-teal/20 bg-teal/5"
+                            aria-expanded={examplesMenuOpen}
+                            aria-controls="intent-suggestion-list"
+                          >
+                            Examples
+                          </button>
+                          <button
+                            type="submit"
+                            id="plan-my-hike-btn"
+                            disabled={!intent.trim()}
+                            className="shrink-0 gradient-orange text-navy px-4 sm:px-6 py-3 sm:py-3.5 rounded-xl font-bold text-xs sm:text-sm hover:shadow-lg hover:shadow-orange/20 transition-all flex items-center gap-2 disabled:opacity-40 whitespace-nowrap"
+                          >
+                            <span className="sm:hidden inline-flex items-center gap-1">
+                              Plan <ArrowRight className="w-4 h-4" />
+                            </span>
+                            <span className="hidden sm:inline-flex items-center gap-2">
+                              Plan My Hike <ArrowRight className="w-4 h-4" />
+                            </span>
+                          </button>
+                        </div>
                       </div>
-                      <input
-                        type="text"
-                        id="hiking-intent-input"
-                        value={intent}
-                        onChange={(e) => setIntent(e.target.value)}
-                        placeholder="e.g. A moderate hike with lake views near Seattle, dog-friendly..."
-                        className="flex-1 bg-transparent border-none text-offwhite placeholder:text-offwhite/25 focus:ring-0 focus:outline-none text-base py-4"
-                      />
-                      <button
-                        type="submit"
-                        id="plan-my-hike-btn"
-                        disabled={!intent.trim() && agentStage !== 'idle'}
-                        className="gradient-orange text-navy px-6 py-3.5 rounded-xl font-bold text-sm hover:shadow-lg hover:shadow-orange/20 transition-all flex items-center gap-2 disabled:opacity-40 whitespace-nowrap"
-                      >
-                        Plan My Hike <ArrowRight className="w-4 h-4" />
-                      </button>
                     </div>
-                  </div>
-                </form>
+                  </form>
 
-                {/* Quick filters toggle */}
-                <button
-                  onClick={() => setShowFilters(!showFilters)}
-                  className="text-xs text-offwhite/30 hover:text-offwhite/60 transition-colors flex items-center gap-1 mx-auto mb-4"
-                >
-                  Quick preferences <ChevronDown className={`w-3 h-3 transition-transform ${showFilters ? 'rotate-180' : ''}`} />
-                </button>
-
-                {/* Quick filters */}
-                <AnimatePresence>
-                  {showFilters && (
-                    <motion.div
-                      initial={{ opacity: 0, height: 0 }}
-                      animate={{ opacity: 1, height: 'auto' }}
-                      exit={{ opacity: 0, height: 0 }}
-                      className="max-w-2xl mx-auto mb-8"
+                  {examplesMenuOpen && screen === 'home' && (
+                    <div
+                      id="intent-suggestion-list"
+                      role="listbox"
+                      className="absolute left-0 right-0 top-full mt-2 z-40 rounded-2xl border border-white/15 bg-navy-card shadow-2xl overflow-hidden text-left"
+                      style={{backdropFilter: 'blur(12px)'}}
                     >
-                      <div className="glass rounded-2xl p-4 flex flex-wrap gap-3 justify-center">
-                        {/* Difficulty */}
-                        <select
-                          value={quickFilters.difficulty}
-                          onChange={(e) => setQuickFilters(f => ({ ...f, difficulty: e.target.value }))}
-                          className="bg-white/5 border border-white/10 text-offwhite/70 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-teal"
-                        >
-                          <option value="">Difficulty</option>
-                          <option value="easy">Easy</option>
-                          <option value="moderate">Moderate</option>
-                          <option value="hard">Hard</option>
-                          <option value="expert">Expert</option>
-                        </select>
-
-                        {/* Max distance */}
-                        <select
-                          value={quickFilters.maxDistance}
-                          onChange={(e) => setQuickFilters(f => ({ ...f, maxDistance: e.target.value }))}
-                          className="bg-white/5 border border-white/10 text-offwhite/70 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-teal"
-                        >
-                          <option value="">Max Distance</option>
-                          <option value="3 miles">3 miles</option>
-                          <option value="5 miles">5 miles</option>
-                          <option value="7 miles">7 miles</option>
-                          <option value="10 miles">10 miles</option>
-                          <option value="15 miles">15 miles</option>
-                        </select>
-
-                        {/* Dog friendly */}
-                        <button
-                          onClick={() => setQuickFilters(f => ({ ...f, dogFriendly: !f.dogFriendly }))}
-                          className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium border transition-all ${
-                            quickFilters.dogFriendly
-                              ? 'bg-teal/20 border-teal/30 text-teal'
-                              : 'bg-white/5 border-white/10 text-offwhite/50'
-                          }`}
-                        >
-                          <Dog className="w-3.5 h-3.5" /> Dog-friendly
-                        </button>
-
-                        {/* Kid friendly */}
-                        <button
-                          onClick={() => setQuickFilters(f => ({ ...f, kidFriendly: !f.kidFriendly }))}
-                          className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium border transition-all ${
-                            quickFilters.kidFriendly
-                              ? 'bg-teal/20 border-teal/30 text-teal'
-                              : 'bg-white/5 border-white/10 text-offwhite/50'
-                          }`}
-                        >
-                          <Baby className="w-3.5 h-3.5" /> Kid-friendly
-                        </button>
+                      <div className="px-3 py-2 border-b border-white/5 bg-navy-light/80">
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-teal">
+                          {intent.trim().length < 2 ? 'Example searches' : 'Matching examples'}
+                        </span>
                       </div>
-                    </motion.div>
+                      <ul className="max-h-64 overflow-y-auto py-1 bg-navy-card/98">
+                        {intentSuggestions.map((line) => (
+                          <li key={line} role="option">
+                            <button
+                              type="button"
+                              className="w-full text-left px-4 py-2.5 text-sm text-offwhite/90 hover:bg-white/10 hover:text-offwhite transition-colors"
+                              onPointerDown={(e) => e.preventDefault()}
+                              onClick={() => {
+                                setIntent(line);
+                                setExamplesMenuOpen(false);
+                              }}
+                            >
+                              {line}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
                   )}
-                </AnimatePresence>
-
-                {/* Prompt chips */}
-                <div className="max-w-3xl mx-auto">
-                  <p className="text-[10px] text-offwhite/20 uppercase tracking-widest mb-3">Try an example</p>
-                  <div className="flex flex-wrap gap-2 justify-center">
-                    {promptChips.map((chip, i) => (
-                      <button
-                        key={i}
-                        onClick={() => setIntent(chip)}
-                        className="bg-white/5 hover:bg-white/10 border border-white/5 hover:border-teal/20 text-offwhite/40 hover:text-offwhite/70 px-3 py-1.5 rounded-full text-[11px] transition-all text-left max-w-xs truncate"
-                      >
-                        {chip}
-                      </button>
-                    ))}
-                  </div>
                 </div>
+
               </motion.div>
             </div>
           </section>
 
           {/* How it works */}
-          <section id="how-it-works" className="py-24 border-t border-white/5">
-            <div className="max-w-6xl mx-auto px-6">
+          <section id="how-it-works" className="py-16 md:py-20 border-t border-white/5">
+            <div className="max-w-7xl mx-auto px-6">
               <div className="text-center mb-16">
                 <h2 className="font-display text-4xl md:text-5xl font-bold text-offwhite mb-4">
                   Four agents. <span className="text-gradient-teal">One perfect plan.</span>
@@ -487,33 +579,33 @@ export default function App() {
                 </p>
               </div>
 
-              <div className="grid md:grid-cols-4 gap-6">
+              <div className="grid grid-cols-4 gap-2 sm:gap-3 lg:gap-4">
                 {[
                   {
                     icon: Brain,
                     name: 'Intent Agent',
-                    desc: 'Parses your natural language into structured preferences — location, difficulty, constraints, and hidden intent.',
+                    desc: 'Turns your request into location, distance, difficulty, and key preferences.',
                     color: '#A78BFA',
                     num: '01',
                   },
                   {
                     icon: Search,
                     name: 'Research Agent',
-                    desc: 'Searches real trail databases, enriches with weather data, drive times, crowd estimates, and scenery analysis.',
+                    desc: 'Finds real trails and adds weather, drive time, and scenery context.',
                     color: '#60A5FA',
                     num: '02',
                   },
                   {
                     icon: ShieldCheck,
                     name: 'Validation Agent',
-                    desc: 'Checks every trail against your constraints. Flags risks, tradeoffs, and missing data with confidence scores.',
+                    desc: 'Checks fit, highlights risks, and scores confidence for each option.',
                     color: '#03D4BD',
                     num: '03',
                   },
                   {
                     icon: Zap,
                     name: 'Action Agent',
-                    desc: 'Builds your trip plan with departure time, packing list, safety notes, backup options, and calendar events.',
+                    desc: 'Builds a ready-to-go plan with timing, gear, safety notes, and backups.',
                     color: '#FF7D0F',
                     num: '04',
                   },
@@ -523,61 +615,21 @@ export default function App() {
                     initial={{ opacity: 0, y: 20 }}
                     whileInView={{ opacity: 1, y: 0 }}
                     viewport={{ once: true }}
-                    className="glass-bright rounded-2xl p-6 group hover:scale-[1.02] transition-transform"
+                    className="glass-bright rounded-xl p-3 sm:p-4 lg:p-5 group hover:scale-[1.02] transition-transform"
                   >
-                    <div className="flex items-center gap-3 mb-4">
+                    <div className="flex items-center gap-2 sm:gap-3 mb-3">
                       <div
-                        className="w-10 h-10 rounded-xl flex items-center justify-center"
+                        className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg flex items-center justify-center shrink-0"
                         style={{ backgroundColor: `${color}20` }}
                       >
-                        <Icon className="w-5 h-5" style={{ color }} />
+                        <Icon className="w-4 h-4 sm:w-5 sm:h-5" style={{ color }} />
                       </div>
-                      <span className="text-[10px] font-bold uppercase tracking-widest" style={{ color: `${color}80` }}>
+                      <span className="text-[8px] sm:text-[9px] font-bold uppercase tracking-wider" style={{ color: `${color}80` }}>
                         Agent {num}
                       </span>
                     </div>
-                    <h3 className="font-display font-bold text-lg text-offwhite mb-2">{name}</h3>
-                    <p className="text-sm text-offwhite/40 leading-relaxed">{desc}</p>
-                  </motion.div>
-                ))}
-              </div>
-            </div>
-          </section>
-
-          {/* Features */}
-          <section id="features" className="py-24 border-t border-white/5">
-            <div className="max-w-6xl mx-auto px-6">
-              <div className="grid md:grid-cols-3 gap-6">
-                {[
-                  {
-                    title: 'Intent-Based Planning',
-                    desc: "Describe how you want to feel — adventurous, peaceful, challenged — and we'll find the trail that matches.",
-                    icon: <Wind className="w-6 h-6 text-orange" />,
-                  },
-                  {
-                    title: 'Data-Grounded Results',
-                    desc: 'Every recommendation is backed by real OpenStreetMap trail data, not generic suggestions.',
-                    icon: <Mountain className="w-6 h-6 text-teal" />,
-                  },
-                  {
-                    title: 'Actionable Trip Plans',
-                    desc: 'Get departure times, packing lists, calendar events, and backup options — ready to go.',
-                    icon: <Compass className="w-6 h-6 text-purple" />,
-                  },
-                ].map((item, i) => (
-                  <motion.div
-                    key={i}
-                    initial={{ opacity: 0, y: 20 }}
-                    whileInView={{ opacity: 1, y: 0 }}
-                    viewport={{ once: true }}
-                    transition={{ delay: i * 0.1 }}
-                    className="glass-bright p-8 rounded-2xl group hover:scale-[1.02] transition-transform"
-                  >
-                    <div className="mb-6 bg-white/5 p-3.5 rounded-xl inline-block border border-white/5 group-hover:border-teal/20 transition-colors">
-                      {item.icon}
-                    </div>
-                    <h3 className="font-display text-xl font-bold text-offwhite mb-3">{item.title}</h3>
-                    <p className="text-offwhite/40 leading-relaxed text-sm">{item.desc}</p>
+                    <h3 className="font-display font-bold text-xs sm:text-sm lg:text-base text-offwhite mb-2 leading-tight">{name}</h3>
+                    <p className="text-[10px] sm:text-xs text-offwhite/40 leading-snug">{desc}</p>
                   </motion.div>
                 ))}
               </div>
@@ -603,8 +655,8 @@ export default function App() {
       {/* WORKFLOW SCREEN                                                */}
       {/* ═══════════════════════════════════════════════════════════════ */}
       {screen === 'workflow' && (
-        <section className="min-h-screen pt-28 pb-20 px-6">
-          <div className="max-w-4xl mx-auto">
+        <section className="min-h-screen pt-28 pb-20 px-4 sm:px-6">
+          <div className="max-w-7xl mx-auto">
             {/* User query display */}
             <motion.div
               initial={{ opacity: 0, y: -10 }}
@@ -659,7 +711,46 @@ export default function App() {
                 )}{' '}
                 — ranked by fit, validated against your constraints.
               </p>
+              {intentProfile && intentProfile.maxDistanceKm > 0 && (
+                <p className="text-offwhite/35 text-sm mt-3 max-w-xl mx-auto">
+                  Your target hike length:{' '}
+                  <span className="text-offwhite/60 font-semibold tabular-nums">
+                    ~{intentProfile.maxDistanceKm.toFixed(1)} km
+                  </span>{' '}
+                  <span className="text-offwhite/30">
+                    (~{(intentProfile.maxDistanceKm * 0.621371).toFixed(1)} mi)
+                  </span>
+                  . Trail lengths below are{' '}
+                  <span className="text-offwhite/50">mapped OSM geometry</span> (route or segment), not always a full loop.
+                </p>
+              )}
             </motion.div>
+
+            {hikeForecast && (
+              <motion.div
+                initial={{ opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="mb-6 flex justify-center px-2"
+              >
+                <div className="inline-flex items-start gap-3 glass-bright border border-blue/20 rounded-2xl px-4 py-3 max-w-2xl text-left">
+                  <CloudRain className="w-5 h-5 text-blue shrink-0 mt-0.5" />
+                  <div>
+                    <div className="text-[10px] font-bold text-blue uppercase tracking-wider mb-1">
+                      Forecast (Open-Meteo)
+                    </div>
+                    <p className="text-sm text-offwhite/80 leading-snug">
+                      {intentProfile?.estimatedRegionName && (
+                        <span className="text-teal font-medium">{intentProfile.estimatedRegionName}</span>
+                      )}
+                      {intentProfile?.estimatedRegionName ? ' · ' : ''}
+                      <span className="text-offwhite/50">{hikeForecast.matchedDate}</span>
+                      {' — '}
+                      {hikeForecast.summary}
+                    </p>
+                  </div>
+                </div>
+              </motion.div>
+            )}
 
             {/* Map */}
             {trails.length > 0 && (
@@ -675,13 +766,18 @@ export default function App() {
                     tags: { ...t.tags, color: i === selectedTrailIndex ? '#FF7D0F' : '#03D4BD' }
                   }))}
                   focusedTrailId={trails[selectedTrailIndex]?.id || null}
+                  center={
+                    approxUserLocation
+                      ? { lat: approxUserLocation.lat, lng: approxUserLocation.lng }
+                      : undefined
+                  }
                 />
               </motion.div>
             )}
 
-            {/* Results grid */}
-            <div className="grid md:grid-cols-3 gap-6 mb-12">
-              {candidates.slice(0, 3).map((candidate, idx) => {
+            {/* Results — baseball-card tiles */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4 sm:gap-6 mb-12 items-stretch justify-items-center">
+              {candidates.slice(0, 5).map((candidate, idx) => {
                 const trail = findTrailForCandidate(candidate);
                 const validation = validations.find(v => v.trailId === candidate.trailId);
                 if (!trail) return null;
@@ -694,6 +790,7 @@ export default function App() {
                     validation={validation}
                     rank={idx}
                     isSelected={selectedTrailIndex === idx}
+                    targetMaxKm={intentProfile?.maxDistanceKm}
                     onSelect={() => {
                       setSelectedTrailIndex(idx);
                       // Show the plan for the selected trail
@@ -761,6 +858,7 @@ export default function App() {
                   candidate={candidate}
                   validation={validation}
                   trailIndex={selectedTrailIndex}
+                  targetHikeKm={intentProfile?.maxDistanceKm}
                   onBack={() => {
                     setScreen('results');
                     window.scrollTo({ top: 0, behavior: 'smooth' });

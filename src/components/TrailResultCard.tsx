@@ -4,14 +4,10 @@ import {
   MapPin,
   Clock,
   Mountain,
-  TrendingUp,
+  ArrowUpRight,
+  ArrowDownRight,
   Users,
   Star,
-  Dog,
-  Waves,
-  TreePine,
-  Eye,
-  Droplets,
   ChevronRight,
   ShieldCheck,
   AlertTriangle,
@@ -20,13 +16,12 @@ import type { TrailCandidate, ValidationResult } from '../services/geminiService
 import type { TrailData } from '../services/osmService';
 import { calculateDistance } from '../utils/trailScoring';
 
-// Trail image URLs (curated Unsplash images for variety)
 const trailImages = [
-  'https://images.unsplash.com/photo-1551632811-561732d1e306?auto=format&fit=crop&q=80&w=800&h=450',
-  'https://images.unsplash.com/photo-1501555088652-021faa106b9b?auto=format&fit=crop&q=80&w=800&h=450',
-  'https://images.unsplash.com/photo-1533240332313-0db49b459ad6?auto=format&fit=crop&q=80&w=800&h=450',
-  'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&q=80&w=800&h=450',
-  'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&q=80&w=800&h=450',
+  'https://images.unsplash.com/photo-1551632811-561732d1e306?auto=format&fit=crop&q=80&w=640&h=896',
+  'https://images.unsplash.com/photo-1501555088652-021faa106b9b?auto=format&fit=crop&q=80&w=640&h=896',
+  'https://images.unsplash.com/photo-1533240332313-0db49b459ad6?auto=format&fit=crop&q=80&w=640&h=896',
+  'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&q=80&w=640&h=896',
+  'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&q=80&w=640&h=896',
 ];
 
 interface TrailResultCardProps {
@@ -35,21 +30,24 @@ interface TrailResultCardProps {
   validation?: ValidationResult;
   rank: number;
   isSelected: boolean;
+  /** User's desired hike length from intent (km). */
+  targetMaxKm?: number;
   onSelect: () => void;
 }
 
 const fitColors: Record<string, { bg: string; text: string; label: string }> = {
-  excellent: { bg: 'bg-green/20', text: 'text-green', label: 'Excellent Fit' },
-  good: { bg: 'bg-teal/20', text: 'text-teal', label: 'Good Fit' },
-  fair: { bg: 'bg-amber/20', text: 'text-amber', label: 'Fair Fit' },
-  poor: { bg: 'bg-red/20', text: 'text-red', label: 'Poor Fit' },
+  excellent: { bg: 'bg-green/25', text: 'text-green', label: 'Excellent' },
+  good: { bg: 'bg-teal/25', text: 'text-teal', label: 'Good' },
+  fair: { bg: 'bg-amber/25', text: 'text-amber', label: 'Fair' },
+  poor: { bg: 'bg-red/25', text: 'text-red', label: 'Poor' },
 };
 
-const crowdColors: Record<string, { bg: string; text: string }> = {
-  low: { bg: 'bg-green/15', text: 'text-green' },
-  moderate: { bg: 'bg-amber/15', text: 'text-amber' },
-  high: { bg: 'bg-red/15', text: 'text-red' },
-};
+function osmLengthLabel(tags: Record<string, string>): string {
+  const src = tags.trailscout_source;
+  if (src === 'osm_relation') return 'OSM route';
+  if (src === 'osm_way_segment') return 'OSM segment';
+  return 'OSM path';
+}
 
 const TrailResultCard: React.FC<TrailResultCardProps> = ({
   trail,
@@ -57,168 +55,197 @@ const TrailResultCard: React.FC<TrailResultCardProps> = ({
   validation,
   rank,
   isSelected,
+  targetMaxKm,
   onSelect,
 }) => {
   const distKm = calculateDistance(trail.path);
   const distMi = (distKm * 0.621371).toFixed(1);
   const imageUrl = trailImages[rank % trailImages.length];
   const fit = validation ? fitColors[validation.overallFit] || fitColors.good : fitColors.good;
-  const crowd = crowdColors[candidate.crowdLevel] || crowdColors.moderate;
+  const sacShort = trail.tags.sac_scale
+    ? trail.tags.sac_scale.replace(/_/g, ' ').slice(0, 14)
+    : null;
 
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: rank * 0.15, duration: 0.5 }}
-      whileHover={{ y: -4, scale: 1.01 }}
+      transition={{ delay: rank * 0.1, duration: 0.45 }}
+      whileHover={{ y: -3, scale: 1.02 }}
       onClick={onSelect}
-      className={`relative group cursor-pointer rounded-3xl overflow-hidden transition-all duration-300 ${
+      className={`w-full max-w-[15rem] sm:max-w-[16rem] h-full cursor-pointer group rounded-md transition-all duration-300 ${
         isSelected
-          ? 'ring-2 ring-teal shadow-xl glow-teal'
-          : 'ring-1 ring-white/10 hover:ring-white/20 shadow-lg'
+          ? 'ring-2 ring-teal ring-offset-2 ring-offset-navy shadow-[0_12px_40px_rgba(3,212,189,0.25)]'
+          : 'shadow-[0_10px_36px_rgba(0,0,0,0.45)] hover:shadow-[0_14px_44px_rgba(0,0,0,0.55)]'
       }`}
+      style={{
+        borderWidth: 3,
+        borderStyle: 'solid',
+        borderColor: '#e4d5bc',
+        background: 'linear-gradient(145deg, #efe6d4 0%, #d8ccb8 100%)',
+      }}
     >
-      {/* Image banner */}
-      <div className="relative h-44 overflow-hidden">
-        <img
-          src={imageUrl}
-          alt={trail.name}
-          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700"
-          referrerPolicy="no-referrer"
-        />
-        <div className="absolute inset-0 bg-gradient-to-t from-navy-card via-navy-card/40 to-transparent" />
-
-        {/* Rank badge */}
-        <div className="absolute top-4 left-4">
-          <div className={`w-9 h-9 rounded-xl flex items-center justify-center font-display font-bold text-sm ${
-            rank === 0 ? 'gradient-orange text-navy' : 'glass text-offwhite'
-          }`}>
-            #{rank + 1}
-          </div>
+      <div className="m-[3px] rounded-[4px] border border-black/35 bg-navy-card flex flex-col overflow-hidden min-h-[17rem] h-full">
+        {/* Trading-card banner */}
+        <div className="gradient-orange flex items-center justify-between px-2.5 py-1 border-b border-black/20">
+          <span className="text-[9px] font-extrabold tracking-[0.15em] text-navy uppercase font-display">
+            TrailScout
+          </span>
+          <span className="text-[10px] font-black text-navy font-display tabular-nums">#{rank + 1}</span>
         </div>
 
-        {/* Match score */}
-        <div className="absolute top-4 right-4">
-          <div className="glass-bright px-3 py-1.5 rounded-full flex items-center gap-1.5">
-            <Star className="w-3.5 h-3.5 text-amber" />
-            <span className="text-xs font-bold text-offwhite">{candidate.matchScore}%</span>
-          </div>
-        </div>
+        {/* Hero image — shorter than portrait trading card */}
+        <div className="relative aspect-[4/3] w-full max-h-[7.5rem] sm:max-h-[8rem] shrink-0 overflow-hidden bg-navy-light">
+          <img
+            src={imageUrl}
+            alt={trail.name}
+            className="h-full w-full object-cover group-hover:scale-[1.04] transition-transform duration-700"
+            referrerPolicy="no-referrer"
+          />
+          <div className="absolute inset-0 bg-gradient-to-t from-navy-card via-transparent to-navy/20" />
 
-        {/* Fit badge */}
-        {validation && (
-          <div className="absolute bottom-4 left-4">
-            <div className={`${fit.bg} ${fit.text} px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider flex items-center gap-1`}>
-              <ShieldCheck className="w-3 h-3" />
-              {fit.label}
+          <div className="absolute bottom-1.5 left-1.5 right-1.5 flex items-center justify-between gap-1">
+            {validation && (
+              <div
+                className={`${fit.bg} ${fit.text} px-2 py-0.5 rounded text-[8px] font-bold uppercase tracking-wide flex items-center gap-0.5`}
+              >
+                <ShieldCheck className="w-2.5 h-2.5 shrink-0" />
+                {fit.label}
+              </div>
+            )}
+            <div className="ml-auto flex items-center gap-0.5 rounded bg-black/55 px-2 py-0.5 text-offwhite">
+              <Star className="w-3 h-3 text-amber shrink-0" />
+              <span className="text-[10px] font-bold tabular-nums">{candidate.matchScore}%</span>
             </div>
           </div>
-        )}
-      </div>
+        </div>
 
-      {/* Content */}
-      <div className="p-5 bg-navy-card">
-        {/* Trail name & distance */}
-        <div className="flex items-start justify-between gap-3 mb-3">
-          <h3 className="font-display font-bold text-lg text-offwhite leading-tight group-hover:text-teal transition-colors">
+        {/* Card body — stats + copy */}
+        <div className="flex flex-col flex-1 p-2 pt-1.5 gap-1.5 border-t border-white/6">
+          <h3 className="font-display font-bold text-xs sm:text-sm text-offwhite text-center leading-tight line-clamp-2 min-h-0 group-hover:text-teal transition-colors">
             {trail.name || 'Unnamed Trail'}
           </h3>
-          <div className="flex-shrink-0 text-right">
-            <div className="text-sm font-bold text-teal">{distKm.toFixed(1)} km</div>
-            <div className="text-[10px] text-offwhite/40">{distMi} mi</div>
+
+          <p className="text-[8px] text-offwhite/35 text-center leading-tight px-0.5">
+            {osmLengthLabel(trail.tags)} · {distKm.toFixed(1)} km ({distMi} mi) mapped
+            {targetMaxKm != null && targetMaxKm > 0 && (
+              <>
+                {' '}
+                <span className="text-offwhite/25">·</span> target ~{targetMaxKm.toFixed(0)} km
+              </>
+            )}
+          </p>
+
+          {/* 2×2 stats */}
+          <div className="grid grid-cols-2 gap-1 text-[8px] sm:text-[9px]">
+            <div className="rounded bg-black/25 border border-white/8 px-1.5 py-1 text-center">
+              <div className="text-offwhite/35 uppercase tracking-wider font-bold">Match</div>
+              <div className="font-display font-bold text-amber tabular-nums">{candidate.matchScore}%</div>
+            </div>
+            <div className="rounded bg-black/25 border border-white/8 px-1.5 py-1 text-center">
+              <div className="text-offwhite/35 uppercase tracking-wider font-bold">Length</div>
+              <div className="font-display font-bold text-teal tabular-nums leading-tight">
+                {distKm.toFixed(1)} km
+                <div className="text-[7px] sm:text-[8px] font-normal text-offwhite/45">{distMi} mi</div>
+              </div>
+            </div>
+            <div className="rounded bg-black/25 border border-white/8 px-1.5 py-1 text-center">
+              <div className="text-offwhite/35 uppercase tracking-wider font-bold">Crowd</div>
+              <div className="font-bold text-offwhite/90 capitalize truncate">{candidate.crowdLevel}</div>
+            </div>
+            <div className="rounded bg-black/25 border border-white/8 px-1.5 py-1 text-center">
+              <div className="text-offwhite/35 uppercase tracking-wider font-bold">Drive</div>
+              <div className="font-bold text-offwhite/90 truncate" title={candidate.estimatedDriveTime}>
+                {candidate.estimatedDriveTime}
+              </div>
+            </div>
+            <div className="rounded bg-black/25 border border-white/8 px-1.5 py-1 text-center">
+              <div className="text-offwhite/35 uppercase tracking-wider font-bold flex items-center justify-center gap-0.5">
+                <ArrowUpRight className="w-2.5 h-2.5 text-green" />
+                Gain
+              </div>
+              <div className="font-display font-bold text-green tabular-nums">
+                {trail.elevationGainM != null ? `${trail.elevationGainM} m` : '—'}
+              </div>
+            </div>
+            <div className="rounded bg-black/25 border border-white/8 px-1.5 py-1 text-center">
+              <div className="text-offwhite/35 uppercase tracking-wider font-bold flex items-center justify-center gap-0.5">
+                <ArrowDownRight className="w-2.5 h-2.5 text-amber" />
+                Loss
+              </div>
+              <div className="font-display font-bold text-amber tabular-nums">
+                {trail.elevationLossM != null ? `${trail.elevationLossM} m` : '—'}
+              </div>
+            </div>
           </div>
-        </div>
 
-        {/* Tags row */}
-        <div className="flex flex-wrap gap-1.5 mb-4">
-          <span className="inline-flex items-center gap-1 bg-white/5 px-2 py-1 rounded-lg text-[10px] font-medium text-offwhite/60">
-            <Clock className="w-3 h-3" /> {candidate.bestTimeToGo}
-          </span>
-          <span className={`inline-flex items-center gap-1 ${crowd.bg} px-2 py-1 rounded-lg text-[10px] font-medium ${crowd.text}`}>
-            <Users className="w-3 h-3" /> {candidate.crowdLevel}
-          </span>
-          <span className="inline-flex items-center gap-1 bg-white/5 px-2 py-1 rounded-lg text-[10px] font-medium text-offwhite/60">
-            <MapPin className="w-3 h-3" /> {candidate.estimatedDriveTime}
-          </span>
-          {trail.tags.sac_scale && (
-            <span className="inline-flex items-center gap-1 bg-orange/15 px-2 py-1 rounded-lg text-[10px] font-medium text-orange">
-              <TrendingUp className="w-3 h-3" /> {trail.tags.sac_scale.replace(/_/g, ' ')}
-            </span>
-          )}
-          {trail.tags.ele && (
-            <span className="inline-flex items-center gap-1 bg-white/5 px-2 py-1 rounded-lg text-[10px] font-medium text-offwhite/60">
-              <Mountain className="w-3 h-3" /> {trail.tags.ele}m
-            </span>
-          )}
-          {trail.tags.dog && trail.tags.dog !== 'no' && (
-            <span className="inline-flex items-center gap-1 bg-green/15 px-2 py-1 rounded-lg text-[10px] font-medium text-green">
-              <Dog className="w-3 h-3" /> Dog OK
-            </span>
-          )}
-        </div>
+          <p className="text-[9px] sm:text-[10px] text-offwhite/55 leading-snug line-clamp-2 border-l-2 border-teal/40 pl-1.5">
+            {candidate.matchExplanation}
+          </p>
 
-        {/* Scenery highlights */}
-        {candidate.sceneryHighlights.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 mb-4">
-            {candidate.sceneryHighlights.map((h, i) => {
-              const icons: Record<string, React.ReactNode> = {
-                lake: <Waves className="w-3 h-3" />,
-                forest: <TreePine className="w-3 h-3" />,
-                mountain: <Mountain className="w-3 h-3" />,
-                view: <Eye className="w-3 h-3" />,
-                waterfall: <Droplets className="w-3 h-3" />,
-              };
-              const matchedIcon = Object.entries(icons).find(([k]) => 
-                h.toLowerCase().includes(k)
-              );
-              return (
+          <div className="flex flex-wrap gap-1 justify-center">
+            <span className="inline-flex items-center gap-0.5 bg-white/6 px-1.5 py-0.5 rounded text-[8px] text-offwhite/55 max-w-full">
+              <Clock className="w-2.5 h-2.5 shrink-0" />
+              <span className="truncate">{candidate.bestTimeToGo}</span>
+            </span>
+            <span className="inline-flex items-center gap-0.5 bg-white/6 px-1.5 py-0.5 rounded text-[8px] text-offwhite/55">
+              <MapPin className="w-2.5 h-2.5 shrink-0" />
+              <span className="truncate max-w-[5.5rem]">{candidate.estimatedDriveTime}</span>
+            </span>
+            {sacShort && (
+              <span className="inline-flex items-center gap-0.5 bg-orange/15 px-1.5 py-0.5 rounded text-[8px] text-orange">
+                <Mountain className="w-2.5 h-2.5 shrink-0" />
+                {sacShort}
+              </span>
+            )}
+          </div>
+
+          {candidate.sceneryHighlights.length > 0 && (
+            <div className="flex flex-wrap gap-1 justify-center">
+              {candidate.sceneryHighlights.slice(0, 2).map((h, i) => (
                 <span
                   key={i}
-                  className="inline-flex items-center gap-1 bg-teal/10 px-2 py-1 rounded-lg text-[10px] font-medium text-teal"
+                  className="bg-teal/12 text-teal px-1.5 py-0.5 rounded text-[8px] font-medium max-w-full truncate"
                 >
-                  {matchedIcon ? matchedIcon[1] : <Star className="w-3 h-3" />}
                   {h}
                 </span>
-              );
-            })}
-          </div>
-        )}
+              ))}
+            </div>
+          )}
 
-        {/* Match explanation */}
-        <p className="text-xs text-offwhite/60 leading-relaxed mb-4 border-l-2 border-teal/30 pl-3">
-          {candidate.matchExplanation}
-        </p>
+          {validation && (validation.warnings.length > 0 || validation.risks.length > 0) && (
+            <div className="space-y-0.5">
+              {validation.warnings.slice(0, 1).map((w, i) => (
+                <div key={`w-${i}`} className="flex items-start gap-1 text-[9px] text-amber/85 line-clamp-2">
+                  <AlertTriangle className="w-2.5 h-2.5 mt-0.5 shrink-0" />
+                  <span>{w}</span>
+                </div>
+              ))}
+              {validation.risks.slice(0, 1).map((r, i) => (
+                <div key={`r-${i}`} className="flex items-start gap-1 text-[9px] text-red/85 line-clamp-2">
+                  <AlertTriangle className="w-2.5 h-2.5 mt-0.5 shrink-0" />
+                  <span>{r}</span>
+                </div>
+              ))}
+            </div>
+          )}
 
-        {/* Validation checks */}
-        {validation && (validation.warnings.length > 0 || validation.risks.length > 0) && (
-          <div className="space-y-1.5 mb-4">
-            {validation.warnings.map((w, i) => (
-              <div key={`w-${i}`} className="flex items-start gap-2 text-[11px] text-amber/80">
-                <AlertTriangle className="w-3 h-3 mt-0.5 flex-shrink-0" />
-                <span>{w}</span>
-              </div>
-            ))}
-            {validation.risks.map((r, i) => (
-              <div key={`r-${i}`} className="flex items-start gap-2 text-[11px] text-red/80">
-                <AlertTriangle className="w-3 h-3 mt-0.5 flex-shrink-0" />
-                <span>{r}</span>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* CTA */}
-        <div className={`flex items-center justify-between pt-3 border-t ${
-          isSelected ? 'border-teal/30' : 'border-white/5'
-        }`}>
-          <span className="text-[10px] text-offwhite/30 uppercase tracking-wider font-medium">
-            {candidate.weatherForecast}
-          </span>
-          <div className={`flex items-center gap-1 text-xs font-semibold transition-colors ${
-            isSelected ? 'text-teal' : 'text-offwhite/40 group-hover:text-teal'
-          }`}>
-            {isSelected ? 'Selected' : 'View Plan'}
-            <ChevronRight className="w-3.5 h-3.5" />
+          <div
+            className={`mt-auto flex items-center justify-between gap-1 pt-1.5 border-t ${
+              isSelected ? 'border-teal/35' : 'border-white/8'
+            }`}
+          >
+            <span className="text-[8px] text-offwhite/30 uppercase tracking-wide font-medium line-clamp-1 flex-1 min-w-0">
+              {candidate.weatherForecast}
+            </span>
+            <div
+              className={`flex items-center gap-0.5 text-[10px] font-bold shrink-0 ${
+                isSelected ? 'text-teal' : 'text-offwhite/45 group-hover:text-teal'
+              }`}
+            >
+              {isSelected ? 'Selected' : 'View'}
+              <ChevronRight className="w-3 h-3" />
+            </div>
           </div>
         </div>
       </div>

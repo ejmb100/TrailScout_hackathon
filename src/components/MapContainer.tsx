@@ -26,6 +26,10 @@ const mapStyles = [
   { featureType: 'water', elementType: 'labels.text.stroke', stylers: [{ color: '#17263c' }] }
 ];
 
+const DEFAULT_CENTER = { lat: 46.5197, lng: 6.6323 };
+/** Default basemap when the map first loads (controls use same union type). */
+const INITIAL_MAP_TYPE = 'terrain' as 'dark' | 'terrain' | 'satellite';
+
 interface MapContainerProps {
   trails: TrailData[];
   center?: { lat: number; lng: number };
@@ -35,35 +39,52 @@ interface MapContainerProps {
 
 const MapContainer: React.FC<MapContainerProps> = ({ 
   trails, 
-  center = { lat: 46.5197, lng: 6.6323 },
+  center: centerProp,
   zoom = 12,
   focusedTrailId = null
 }) => {
+  const center = centerProp ?? DEFAULT_CENTER;
   const mapRef = useRef<HTMLDivElement>(null);
   const googleMap = useRef<google.maps.Map | null>(null);
   const polylines = useRef<google.maps.Polyline[]>([]);
   const markers = useRef<google.maps.Marker[]>([]);
   const prevTrailsCount = useRef<number>(0);
   
-  const [mapType, setMapType] = useState<'dark' | 'terrain' | 'satellite'>('dark');
+  const [mapType, setMapType] = useState<'dark' | 'terrain' | 'satellite'>(INITIAL_MAP_TYPE);
   const [is3D, setIs3D] = useState(false);
 
     useEffect(() => {
       const initGoogleMapInner = () => {
         if (mapRef.current && !googleMap.current && window.google) {
+          const mapTypeId =
+            INITIAL_MAP_TYPE === 'dark'
+              ? 'roadmap'
+              : INITIAL_MAP_TYPE === 'terrain'
+                ? 'terrain'
+                : 'satellite';
+
           googleMap.current = new google.maps.Map(mapRef.current, {
             center,
             zoom,
             mapId: 'DEMO_MAP_ID',
+            mapTypeId,
             tilt: 0,
             heading: 0,
             disableDefaultUI: true, // Prevents overlaps with our custom UI
             zoomControl: true, // Keep zoom buttons
             tiltControl: true, // Explicitly enable the manual 3D tilt control
+            scaleControl: true,
+            scaleControlOptions: {
+              position: google.maps.ControlPosition.BOTTOM_CENTER,
+            },
           });
           
           if (!is3D) {
-            googleMap.current.setOptions({ styles: mapStyles });
+            if (INITIAL_MAP_TYPE === 'dark') {
+              googleMap.current.setOptions({ styles: mapStyles });
+            } else {
+              googleMap.current.setOptions({ styles: [] });
+            }
           }
           
           renderTrails();
@@ -106,13 +127,18 @@ const MapContainer: React.FC<MapContainerProps> = ({
         googleMap.current.setOptions({ 
           mapTypeId: 'satellite',
           styles: [], 
-          gestureHandling: 'greedy'
+          gestureHandling: 'greedy',
+          scaleControl: false,
         });
         googleMap.current.setTilt(65);
         googleMap.current.setHeading(45);
       } else {
         googleMap.current.setOptions({ 
-          gestureHandling: 'cooperative' // Make 2D dragging safer
+          gestureHandling: 'cooperative', // Make 2D dragging safer
+          scaleControl: true,
+          scaleControlOptions: {
+            position: google.maps.ControlPosition.BOTTOM_CENTER,
+          },
         });
         googleMap.current.setTilt(0);
         googleMap.current.setHeading(0);
@@ -148,6 +174,11 @@ const MapContainer: React.FC<MapContainerProps> = ({
         }
       }
     }, [focusedTrailId]);
+
+    useEffect(() => {
+      if (!googleMap.current || trails.length > 0) return;
+      googleMap.current.setCenter(center);
+    }, [center.lat, center.lng, trails.length]);
 
   const renderTrails = () => {
     if (!googleMap.current) return;

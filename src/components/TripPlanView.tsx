@@ -20,6 +20,8 @@ import {
   Star,
   Navigation,
   Package,
+  TrendingUp,
+  TrendingDown,
 } from 'lucide-react';
 import type { TripPlan, TrailCandidate, ValidationResult } from '../services/geminiService';
 import type { TrailData } from '../services/osmService';
@@ -40,6 +42,8 @@ interface TripPlanViewProps {
   candidate: TrailCandidate;
   validation: ValidationResult;
   trailIndex: number;
+  /** User's desired hike length from intent (km), for comparison to mapped geometry. */
+  targetHikeKm?: number;
   onBack: () => void;
 }
 
@@ -49,6 +53,7 @@ const TripPlanView: React.FC<TripPlanViewProps> = ({
   candidate,
   validation,
   trailIndex,
+  targetHikeKm,
   onBack,
 }) => {
   const [calendarAdded, setCalendarAdded] = useState(false);
@@ -110,8 +115,15 @@ END:VCALENDAR`;
     md += `- **Depart:** ${plan.departureTime}\n`;
     md += `- **Return:** ${plan.expectedReturnTime}\n`;
     md += `- **Duration:** ${plan.estimatedDuration}\n`;
-    md += `- **Drive:** ${plan.driveTime}\n\n`;
-    md += `### Conditions\n`;
+    md += `- **Drive:** ${plan.driveTime}\n`;
+    if (trail.elevationGainM != null && trail.elevationLossM != null) {
+      md += `- **Elevation gain / loss:** ${trail.elevationGainM} m / ${trail.elevationLossM} m (DEM along trail)\n`;
+    }
+    md += `- **Mapped OSM path:** ${distKm.toFixed(1)} km (${(distKm * 0.621371).toFixed(1)} mi)\n`;
+    if (targetHikeKm != null && targetHikeKm > 0) {
+      md += `- **Your target length:** ~${targetHikeKm.toFixed(1)} km\n`;
+    }
+    md += `\n### Conditions\n`;
     md += `- **Weather:** ${plan.weatherSummary}\n`;
     md += `- **Trail:** ${plan.conditionsSummary}\n\n`;
     md += `### Route Notes\n${plan.routeNotes}\n\n`;
@@ -181,9 +193,21 @@ END:VCALENDAR`;
       </div>
 
       {/* Quick stats row */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-8">
         {[
           { icon: Navigation, label: 'Distance', value: `${distKm.toFixed(1)} km`, color: 'text-teal' },
+          {
+            icon: TrendingUp,
+            label: 'Elev. gain',
+            value: trail.elevationGainM != null ? `${trail.elevationGainM} m` : '—',
+            color: 'text-green',
+          },
+          {
+            icon: TrendingDown,
+            label: 'Elev. loss',
+            value: trail.elevationLossM != null ? `${trail.elevationLossM} m` : '—',
+            color: 'text-amber',
+          },
           { icon: Clock, label: 'Duration', value: plan.estimatedDuration, color: 'text-blue' },
           { icon: MapPin, label: 'Drive Time', value: plan.driveTime, color: 'text-purple' },
           { icon: Sun, label: 'Depart', value: plan.departureTime, color: 'text-orange' },
@@ -227,6 +251,25 @@ END:VCALENDAR`;
                 <p className="text-sm text-offwhite/80">{plan.conditionsSummary}</p>
               </div>
             </div>
+            <p className="text-[11px] text-offwhite/40 mt-4 leading-relaxed border-t border-white/10 pt-4">
+              Mapped OSM path:{' '}
+              <span className="text-offwhite/65 tabular-nums">
+                {distKm.toFixed(1)} km ({(distKm * 0.621371).toFixed(1)} mi)
+              </span>
+              {trail.tags.trailscout_source === 'osm_relation' && (
+                <span className="text-offwhite/30"> · merged hiking route</span>
+              )}
+              {trail.tags.trailscout_source === 'osm_way_segment' && (
+                <span className="text-offwhite/30"> · single mapped segment</span>
+              )}
+              {targetHikeKm != null && targetHikeKm > 0 && (
+                <>
+                  {' '}
+                  · Your target ~{targetHikeKm.toFixed(1)} km. Real distance may differ if the trail continues
+                  off the mapped geometry.
+                </>
+              )}
+            </p>
           </div>
 
           {/* Validation checks */}

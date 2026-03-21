@@ -7,7 +7,6 @@ import {
   Zap,
   CheckCircle2,
   Loader2,
-  ArrowDown,
 } from 'lucide-react';
 
 export type AgentStage = 'idle' | 'intent' | 'research' | 'validation' | 'action' | 'complete';
@@ -64,7 +63,7 @@ const stageOrder: AgentStage[] = ['intent', 'research', 'validation', 'action'];
 function getAgentStatus(agentId: string, currentStage: AgentStage): 'pending' | 'active' | 'done' {
   const currentIndex = stageOrder.indexOf(currentStage as any);
   const agentIndex = stageOrder.indexOf(agentId as any);
-  
+
   if (currentStage === 'complete') return 'done';
   if (currentStage === 'idle') return 'pending';
   if (agentIndex < currentIndex) return 'done';
@@ -95,10 +94,10 @@ const AgentWorkflow: React.FC<AgentWorkflowProps> = (props) => {
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.5 }}
-      className="w-full max-w-2xl mx-auto"
+      className="w-full max-w-7xl mx-auto"
     >
       {/* Header */}
-      <div className="text-center mb-8">
+      <div className="text-center mb-6">
         <motion.div
           initial={{ scale: 0.9, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
@@ -112,135 +111,108 @@ const AgentWorkflow: React.FC<AgentWorkflowProps> = (props) => {
         <h3 className="font-display text-2xl font-bold text-offwhite">
           {currentStage === 'complete' ? 'Analysis Complete' : 'Agents Working...'}
         </h3>
+        <p className="text-offwhite/35 text-xs mt-2 max-w-xl mx-auto">
+          Four stages shown side by side — the pipeline still runs in order under the hood.
+        </p>
       </div>
 
-      {/* Agent Steps */}
-      <div className="space-y-3">
+      {/* Agent columns */}
+      <div className="grid grid-cols-4 gap-2 sm:gap-3">
         {agents.map((agent, index) => {
           const status = getAgentStatus(agent.id, currentStage);
           const Icon = agent.icon;
           const summary = getSummaryForAgent(agent.id, props);
 
           return (
-            <React.Fragment key={agent.id}>
-              <motion.div
-                initial={{ opacity: 0, x: -20 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: index * 0.1, duration: 0.4 }}
-                className={`relative rounded-2xl overflow-hidden transition-all duration-500 ${
-                  status === 'active' 
-                    ? 'ring-2 shadow-lg' 
-                    : status === 'done'
-                    ? 'opacity-90'
-                    : 'opacity-40'
-                }`}
+            <motion.div
+              key={agent.id}
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: index * 0.08, duration: 0.4 }}
+              className={`relative rounded-xl overflow-hidden transition-all duration-500 min-h-[180px] flex flex-col ${
+                status === 'active'
+                  ? 'shadow-lg'
+                  : status === 'done'
+                  ? 'opacity-95'
+                  : 'opacity-45'
+              }`}
+              style={{
+                boxShadow: status === 'active' ? `0 0 28px ${agent.bgGlow}` : undefined,
+              }}
+            >
+              {status === 'active' && (
+                <motion.div
+                  className="absolute inset-0 shimmer rounded-xl pointer-events-none"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                />
+              )}
+
+              <div
+                className="relative glass-bright rounded-xl p-3 sm:p-3.5 flex flex-col items-center text-center h-full min-h-[180px]"
                 style={{
-                  ringColor: status === 'active' ? agent.color : 'transparent',
-                  boxShadow: status === 'active' ? `0 0 30px ${agent.bgGlow}` : 'none',
+                  borderColor: status === 'active' ? `${agent.color}55` : 'rgba(255,255,255,0.06)',
+                  borderWidth: '1px',
+                  borderStyle: 'solid',
+                  ...(status === 'active' ? { outline: `2px solid ${agent.color}`, outlineOffset: '0px' } : {}),
                 }}
               >
-                {/* Active shimmer effect */}
-                {status === 'active' && (
-                  <motion.div
-                    className="absolute inset-0 shimmer rounded-2xl"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                  />
-                )}
-
-                <div 
-                  className="relative glass-bright rounded-2xl p-4 flex items-start gap-4"
+                <div
+                  className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center mb-2"
                   style={{
-                    borderColor: status === 'active' ? `${agent.color}40` : 'rgba(255,255,255,0.06)',
-                    borderWidth: '1px',
-                    borderStyle: 'solid',
+                    backgroundColor: status !== 'pending' ? `${agent.color}22` : 'rgba(255,255,255,0.05)',
                   }}
                 >
-                  {/* Icon */}
-                  <div
-                    className="flex-shrink-0 w-10 h-10 rounded-xl flex items-center justify-center"
-                    style={{ 
-                      backgroundColor: status !== 'pending' ? `${agent.color}20` : 'rgba(255,255,255,0.05)',
-                    }}
-                  >
-                    {status === 'active' ? (
-                      <Loader2 
-                        className="w-5 h-5 animate-spin" 
-                        style={{ color: agent.color }}
-                      />
-                    ) : status === 'done' ? (
-                      <CheckCircle2 
-                        className="w-5 h-5" 
-                        style={{ color: agent.color }}
-                      />
-                    ) : (
-                      <Icon 
-                        className="w-5 h-5" 
-                        style={{ color: 'rgba(255,255,255,0.3)' }}
-                      />
-                    )}
-                  </div>
-
-                  {/* Content */}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between mb-1">
-                      <h4 
-                        className="font-display font-bold text-sm"
-                        style={{ color: status !== 'pending' ? agent.color : 'rgba(255,255,255,0.3)' }}
-                      >
-                        {agent.name}
-                      </h4>
-                      <span className={`text-[10px] uppercase tracking-wider font-bold px-2 py-0.5 rounded-full ${
-                        status === 'active' 
-                          ? 'bg-white/10 text-white' 
-                          : status === 'done'
-                          ? 'bg-green/10 text-green'
-                          : 'bg-white/5 text-white/20'
-                      }`}>
-                        {status === 'active' ? 'Running' : status === 'done' ? 'Done' : 'Queued'}
-                      </span>
-                    </div>
-                    
-                    <p className="text-xs text-offwhite/50 leading-relaxed">
-                      {status === 'done' 
-                        ? agent.doneDescription
-                        : status === 'active'
-                        ? agent.description
-                        : `Waiting for ${agents[index - 1]?.name || 'start'}...`
-                      }
-                    </p>
-
-                    {/* Summary when done */}
-                    <AnimatePresence>
-                      {status === 'done' && summary && (
-                        <motion.div
-                          initial={{ opacity: 0, height: 0 }}
-                          animate={{ opacity: 1, height: 'auto' }}
-                          exit={{ opacity: 0, height: 0 }}
-                          className="mt-2 text-xs text-offwhite/70 italic border-l-2 pl-3 py-1"
-                          style={{ borderColor: `${agent.color}60` }}
-                        >
-                          "{summary}"
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
+                  {status === 'active' ? (
+                    <Loader2 className="w-4 h-4 sm:w-5 sm:h-5 animate-spin" style={{ color: agent.color }} />
+                  ) : status === 'done' ? (
+                    <CheckCircle2 className="w-4 h-4 sm:w-5 sm:h-5" style={{ color: agent.color }} />
+                  ) : (
+                    <Icon className="w-4 h-4 sm:w-5 sm:h-5" style={{ color: 'rgba(255,255,255,0.28)' }} />
+                  )}
                 </div>
-              </motion.div>
 
-              {/* Connector arrow */}
-              {index < agents.length - 1 && (
-                <div className="flex justify-center">
-                  <ArrowDown 
-                    className={`w-4 h-4 transition-colors duration-300 ${
-                      getAgentStatus(agents[index + 1].id, currentStage) !== 'pending'
-                        ? 'text-white/30'
-                        : 'text-white/10'
-                    }`}
-                  />
-                </div>
-              )}
-            </React.Fragment>
+                <h4
+                  className="font-display font-bold text-[10px] sm:text-xs leading-tight mb-1"
+                  style={{ color: status !== 'pending' ? agent.color : 'rgba(255,255,255,0.3)' }}
+                >
+                  {agent.name}
+                </h4>
+
+                <span
+                  className={`text-[8px] sm:text-[9px] uppercase tracking-wide font-bold px-1.5 sm:px-2 py-0.5 rounded-full mb-2 ${
+                    status === 'active'
+                      ? 'bg-white/10 text-white'
+                      : status === 'done'
+                      ? 'bg-green/10 text-green'
+                      : 'bg-white/5 text-white/20'
+                  }`}
+                >
+                  {status === 'active' ? 'Running' : status === 'done' ? 'Done' : 'Queued'}
+                </span>
+
+                <p className="text-[9px] sm:text-[11px] text-offwhite/50 leading-snug flex-1 line-clamp-4">
+                  {status === 'done'
+                    ? agent.doneDescription
+                    : status === 'active'
+                    ? agent.description
+                    : `Waiting for ${agents[index - 1]?.name || 'start'}...`}
+                </p>
+
+                <AnimatePresence>
+                  {status === 'done' && summary && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: 'auto' }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="mt-2 text-[9px] sm:text-[11px] text-offwhite/65 italic border-t border-white/10 pt-2 w-full line-clamp-3"
+                    >
+                      &ldquo;{summary}&rdquo;
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            </motion.div>
           );
         })}
       </div>
