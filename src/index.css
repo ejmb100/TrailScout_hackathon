@@ -1,20 +1,25 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Outfit:wght@500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800;900&display=swap');
 @import "tailwindcss";
 
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-display: "Outfit", sans-serif;
 
-  --color-navy: #001A29;
-  --color-teal: #03B2BA;
-  --color-offwhite: #FCFFFF;
+  --color-navy: #0A1628;
+  --color-navy-light: #132035;
+  --color-navy-card: #111D32;
+  --color-teal: #03D4BD;
+  --color-teal-dark: #02A898;
+  --color-offwhite: #F0F4F8;
   --color-orange: #FF7D0F;
-  --color-peach: #FFBF6E;
-
-  /* Mapping to existing names to minimize App.tsx changes where appropriate, 
-     but I will also update App.tsx for better brand alignment */
-  --color-forest: #001A29;
-  --color-sage: #03B2BA;
+  --color-peach: #FFB86C;
+  --color-amber: #FFC107;
+  --color-forest: #0A1628;
+  --color-sage: #03D4BD;
+  --color-red: #FF4C4C;
+  --color-green: #34D399;
+  --color-blue: #60A5FA;
+  --color-purple: #A78BFA;
 }
 
 @layer base {
@@ -22,6 +27,81 @@
     scroll-behavior: smooth;
   }
   body {
-    @apply bg-offwhite text-forest font-sans;
+    @apply bg-navy text-offwhite font-sans;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(3, 212, 189, 0.2);
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(3, 212, 189, 0.4);
+  }
+}
+
+@layer utilities {
+  .glass {
+    background: rgba(17, 29, 50, 0.6);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  .glass-bright {
+    background: rgba(17, 29, 50, 0.85);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+  }
+  .gradient-teal {
+    background: linear-gradient(135deg, #03D4BD, #02A898);
+  }
+  .gradient-orange {
+    background: linear-gradient(135deg, #FF7D0F, #FFB86C);
+  }
+  .gradient-hero {
+    background: linear-gradient(180deg, rgba(10,22,40,0.4) 0%, rgba(10,22,40,0.7) 40%, rgba(10,22,40,0.95) 80%, #0A1628 100%);
+  }
+  .text-gradient-teal {
+    background: linear-gradient(135deg, #03D4BD, #60A5FA);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .text-gradient-warm {
+    background: linear-gradient(135deg, #FF7D0F, #FFB86C);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .glow-teal {
+    box-shadow: 0 0 30px rgba(3, 212, 189, 0.15), 0 0 60px rgba(3, 212, 189, 0.05);
+  }
+  .glow-orange {
+    box-shadow: 0 0 30px rgba(255, 125, 15, 0.2), 0 0 60px rgba(255, 125, 15, 0.05);
+  }
+  .pulse-ring {
+    animation: pulse-ring 2s ease-out infinite;
+  }
+  @keyframes pulse-ring {
+    0% { transform: scale(0.8); opacity: 1; }
+    100% { transform: scale(2); opacity: 0; }
+  }
+  .shimmer {
+    animation: shimmer 2s linear infinite;
+    background-size: 200% 100%;
+    background-image: linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.05) 50%, rgba(255,255,255,0) 100%);
+  }
+  @keyframes shimmer {
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
   }
 }

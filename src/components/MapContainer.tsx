@@ -30,12 +30,14 @@ interface MapContainerProps {
   trails: TrailData[];
   center?: { lat: number; lng: number };
   zoom?: number;
+  focusedTrailId?: number | null;
 }
 
 const MapContainer: React.FC<MapContainerProps> = ({ 
   trails, 
   center = { lat: 46.5197, lng: 6.6323 },
-  zoom = 12 
+  zoom = 12,
+  focusedTrailId = null
 }) => {
   const mapRef = useRef<HTMLDivElement>(null);
   const googleMap = useRef<google.maps.Map | null>(null);
@@ -133,7 +135,19 @@ const MapContainer: React.FC<MapContainerProps> = ({
       if (googleMap.current) {
         renderTrails();
       }
-    }, [trails]);
+    }, [trails, focusedTrailId]);
+
+    useEffect(() => {
+      if (googleMap.current && focusedTrailId) {
+        const trail = trails.find(t => t.id === focusedTrailId);
+        if (trail) {
+          const focusBounds = new google.maps.LatLngBounds();
+          trail.path.forEach(p => focusBounds.extend(p));
+          googleMap.current.fitBounds(focusBounds, { padding: 100 });
+          console.log(`Explicitly zooming to trail: ${trail.name}`);
+        }
+      }
+    }, [focusedTrailId]);
 
   const renderTrails = () => {
     if (!googleMap.current) return;
@@ -202,15 +216,30 @@ const MapContainer: React.FC<MapContainerProps> = ({
 
     if (hasPoints && googleMap.current) {
       try {
-        // ONLY fit bounds if the number of trails actually changed (e.g. after a new search)
-        // This prevents the map from "snapping" or going blank during a drag/drop operation.
-        if (trails.length !== prevTrailsCount.current && !bounds.isEmpty()) {
-            googleMap.current.fitBounds(bounds);
-            prevTrailsCount.current = trails.length;
+        const highlightedTrails = trails.filter(t => t.tags.color === '#FF7D0F');
+        
+        if (highlightedTrails.length > 0) {
+          const highlightBounds = new google.maps.LatLngBounds();
+          highlightedTrails.forEach(t => {
+            t.path.forEach(p => highlightBounds.extend(p));
+          });
+          
+          if (!highlightBounds.isEmpty()) {
+            // Use fitBounds with padding to ensure we "zero in" effectively
+            googleMap.current.fitBounds(highlightBounds, {
+              top: 50,
+              bottom: 50,
+              left: 50,
+              right: 50
+            });
+            console.log('Zeroing in on shortlisted trail...');
+          }
+        } else if (trails.length !== prevTrailsCount.current && !bounds.isEmpty()) {
+          googleMap.current.fitBounds(bounds, { padding: 40 });
+          prevTrailsCount.current = trails.length;
         }
       } catch (e) {
         console.error('Map fitBounds failed:', e);
-        try { googleMap.current.fitBounds(bounds.toJSON()); } catch (e2) {}
       }
     }
   };

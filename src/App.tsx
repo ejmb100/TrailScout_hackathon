@@ -1,114 +1,127 @@
 /**
- * @license
- * SPDX-License-Identifier: Apache-2.0
+ * TrailScout — Multi-Agent Outdoor Planning Engine
+ * 
+ * Architecture:
+ *   Agent 1: Intent Agent (parses NL → structured profile)
+ *   Agent 2: Research Agent (enriches trails with context)
+ *   Agent 3: Validation Agent (validates against constraints)
+ *   Agent 4: Action Agent (generates trip plan)
  */
 
-import React, { useState, useEffect } from 'react';
-import { 
-  Compass, 
-  Map as MapIcon, 
-  Search, 
-  MessageSquare, 
-  Navigation, 
-  CheckCircle2, 
-  ArrowRight, 
-  Menu, 
-  X, 
-  Mountain, 
-  Wind, 
-  Sun, 
+import React, { useState, useRef } from 'react';
+import {
+  Compass,
+  Map as MapIcon,
+  ArrowRight,
+  Menu,
+  X,
+  Mountain,
+  Wind,
   Dog,
+  Baby,
+  Gauge,
+  Ruler,
+  Brain,
+  Search,
+  ShieldCheck,
+  Zap,
   ChevronDown,
-  Download,
-  Clock
+  Sparkles,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { parseUserIntent } from './services/geminiService';
-import { fetchTrailsInBBox, TrailData } from './services/osmService';
+
+import AgentWorkflow from './components/AgentWorkflow';
+import type { AgentStage } from './components/AgentWorkflow';
+import TrailResultCard from './components/TrailResultCard';
+import TripPlanView from './components/TripPlanView';
 import MapContainer from './components/MapContainer';
-import { DragDropContext, Droppable, Draggable, DropResult } from '@hello-pangea/dnd';
+
+import {
+  runIntentAgent,
+  runResearchAgent,
+  runValidationAgent,
+  runActionAgent,
+  intentToLegacyPrefs,
+  type IntentProfile,
+  type TrailCandidate,
+  type ValidationResult,
+  type TripPlan,
+} from './services/geminiService';
+import { fetchTrailsInBBox, type TrailData } from './services/osmService';
 import { scoreAndFilterTrails, calculateDistance } from './utils/trailScoring';
 
-// --- Components ---
+// ─── Screen types ─────────────────────────────────────────────────────
 
-const Navbar = () => {
+type AppScreen = 'home' | 'workflow' | 'results' | 'plan';
+
+// ─── Prompt chips ─────────────────────────────────────────────────────
+
+const promptChips = [
+  "I'm visiting Seattle tomorrow and want a moderate hike with lake views, under 7 miles, dog-friendly, back by 2pm",
+  "A challenging ridge walk in the Swiss Alps with stunning panoramic views, 15+ km",
+  "Easy family hike near Portland with waterfalls, kid-friendly, under 4 miles",
+  "I want a quiet forest trail near Asheville NC, no crowds, moderate difficulty",
+  "Weekend day hike near Denver with wildflowers and mountain views, 8-10 miles",
+];
+
+// ─── Quick filter options ─────────────────────────────────────────────
+
+interface QuickFilters {
+  difficulty: string;
+  dogFriendly: boolean;
+  kidFriendly: boolean;
+  maxDistance: string;
+}
+
+// ─── Navbar ───────────────────────────────────────────────────────────
+
+const Navbar: React.FC<{ onLogoClick: () => void }> = ({ onLogoClick }) => {
   const [isOpen, setIsOpen] = useState(false);
-  const [scrolled, setScrolled] = useState(false);
-
-  useEffect(() => {
-    const handleScroll = () => setScrolled(window.scrollY > 20);
-    window.addEventListener('scroll', handleScroll);
-    return () => window.removeEventListener('scroll', handleScroll);
-  }, []);
-
-  const navLinks = [
-    { name: 'How it Works', href: '#how-it-works' },
-    { name: 'Features', href: '#features' },
-    { name: 'Preview', href: '#preview' },
-    { name: 'Waitlist', href: '#waitlist' },
-  ];
 
   return (
-    <nav className={`fixed top-0 w-full z-50 transition-all duration-300 ${scrolled ? 'bg-navy/90 backdrop-blur-md shadow-sm py-4' : 'bg-transparent py-6'}`}>
-      <div className="max-w-7xl mx-auto px-6 flex justify-between items-center">
-        <div className="flex items-center gap-2">
-          <div className="bg-teal p-1.5 rounded-lg">
-            <Compass className="text-navy w-6 h-6" />
+    <nav className="fixed top-0 w-full z-50 bg-navy/80 backdrop-blur-xl border-b border-white/5">
+      <div className="max-w-7xl mx-auto px-6 py-4 flex justify-between items-center">
+        <button onClick={onLogoClick} className="flex items-center gap-2.5 group">
+          <div className="bg-teal/20 group-hover:bg-teal/30 p-2 rounded-xl transition-colors">
+            <Compass className="text-teal w-5 h-5" />
           </div>
-          <span className="font-display font-bold text-xl tracking-tight text-offwhite">TrailScout</span>
+          <div>
+            <span className="font-display font-bold text-lg tracking-tight text-offwhite block leading-none">
+              TrailScout
+            </span>
+            <span className="text-[9px] text-teal/70 uppercase tracking-[0.2em] font-semibold">
+              Multi-Agent Engine
+            </span>
+          </div>
+        </button>
+
+        {/* Desktop nav */}
+        <div className="hidden md:flex items-center gap-6">
+          <a href="#how-it-works" className="text-sm text-offwhite/50 hover:text-teal transition-colors">How it Works</a>
+          <a href="#features" className="text-sm text-offwhite/50 hover:text-teal transition-colors">Features</a>
+          <div className="flex items-center gap-1.5 bg-teal/10 px-3 py-1.5 rounded-full border border-teal/20">
+            <div className="w-1.5 h-1.5 rounded-full bg-teal animate-pulse" />
+            <span className="text-[10px] text-teal font-semibold uppercase tracking-wider">4 Agents Online</span>
+          </div>
         </div>
 
-        {/* Desktop Nav */}
-        <div className="hidden md:flex items-center gap-8">
-          {navLinks.map((link) => (
-            <a 
-              key={link.name} 
-              href={link.href} 
-              className="text-sm font-medium text-offwhite/70 hover:text-teal transition-colors"
-            >
-              {link.name}
-            </a>
-          ))}
-          <a 
-            href="#waitlist" 
-            className="bg-orange text-offwhite px-5 py-2.5 rounded-full text-sm font-semibold hover:bg-peach hover:text-navy transition-all shadow-md hover:shadow-lg"
-          >
-            Join Waitlist
-          </a>
-        </div>
-
-        {/* Mobile Toggle */}
-        <button className="md:hidden text-offwhite" onClick={() => setIsOpen(!isOpen)}>
-          {isOpen ? <X /> : <Menu />}
+        <button className="md:hidden text-offwhite/70" onClick={() => setIsOpen(!isOpen)}>
+          {isOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
         </button>
       </div>
 
-      {/* Mobile Menu */}
       <AnimatePresence>
         {isOpen && (
-          <motion.div 
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -20 }}
-            className="absolute top-full left-0 w-full bg-navy border-b border-white/10 p-6 flex flex-col gap-4 md:hidden shadow-xl"
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            className="md:hidden border-t border-white/5 bg-navy/95 backdrop-blur-xl"
           >
-            {navLinks.map((link) => (
-              <a 
-                key={link.name} 
-                href={link.href} 
-                className="text-lg font-medium text-offwhite"
-                onClick={() => setIsOpen(false)}
-              >
-                {link.name}
-              </a>
-            ))}
-            <a 
-              href="#waitlist" 
-              className="bg-orange text-offwhite px-6 py-3 rounded-xl text-center font-semibold"
-              onClick={() => setIsOpen(false)}
-            >
-              Join Waitlist
-            </a>
+            <div className="px-6 py-4 space-y-3">
+              <a href="#how-it-works" className="block text-offwhite/60 py-2" onClick={() => setIsOpen(false)}>How it Works</a>
+              <a href="#features" className="block text-offwhite/60 py-2" onClick={() => setIsOpen(false)}>Features</a>
+            </div>
           </motion.div>
         )}
       </AnimatePresence>
@@ -116,469 +129,648 @@ const Navbar = () => {
   );
 };
 
-const getTrailDescription = (trail: TrailData) => {
-  const dist = calculateDistance(trail.path).toFixed(1);
-  const diff = trail.tags.sac_scale ? trail.tags.sac_scale.replace('hiking', 'hiking trail').replace(/_/g, ' ') : 'unrated path';
-  const surface = trail.tags.surface ? ` mostly over ${trail.tags.surface.replace(/_/g, ' ')}` : '';
-  const type = trail.tags.highway ? trail.tags.highway.replace(/_/g, ' ') : 'route';
-  return `This is a ${dist}km ${diff} ${surface}. Ideal for an outdoor ${type} adventure.`;
-};
-
-const getEstimatedTime = (distanceKm: number) => {
-  // Simple Naismith's rule (assuming 4 km/h avg pace)
-  const totalMinutes = Math.round((distanceKm / 4) * 60);
-  if (totalMinutes === 0) return '< 1 min';
-  if (totalMinutes < 60) return `${totalMinutes} min`;
-  const hrs = Math.floor(totalMinutes / 60);
-  const mins = totalMinutes % 60;
-  return mins > 0 ? `${hrs}h ${mins}m` : `${hrs}h`;
-};
+// ═══════════════════════════════════════════════════════════════════════
+// ─── Main App ─────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════
 
 export default function App() {
+  // Screen state
+  const [screen, setScreen] = useState<AppScreen>('home');
+  
+  // Input state
   const [intent, setIntent] = useState('');
-  const [isSearching, setIsSearching] = useState(false);
-  const [reasoning, setReasoning] = useState('');
+  const [quickFilters, setQuickFilters] = useState<QuickFilters>({
+    difficulty: '',
+    dogFriendly: false,
+    kidFriendly: false,
+    maxDistance: '',
+  });
+  const [showFilters, setShowFilters] = useState(false);
 
-  const [availableTrails, setAvailableTrails] = useState<TrailData[]>([]);
-  const [itineraryTrails, setItineraryTrails] = useState<TrailData[]>([]);
-  const [regionFocus, setRegionFocus] = useState<string | null>(null);
+  // Agent pipeline state
+  const [agentStage, setAgentStage] = useState<AgentStage>('idle');
+  const [intentProfile, setIntentProfile] = useState<IntentProfile | null>(null);
+  const [trails, setTrails] = useState<TrailData[]>([]);
+  const [candidates, setCandidates] = useState<TrailCandidate[]>([]);
+  const [validations, setValidations] = useState<ValidationResult[]>([]);
+  const [tripPlan, setTripPlan] = useState<TripPlan | null>(null);
+  const [selectedTrailIndex, setSelectedTrailIndex] = useState(0);
 
+  // Agent summaries for the workflow display
+  const [intentSummary, setIntentSummary] = useState('');
+  const [researchSummary, setResearchSummary] = useState('');
+  const [validationSummary, setValidationSummary] = useState('');
+  const [actionSummary, setActionSummary] = useState('');
+
+  // Error state
+  const [error, setError] = useState('');
+
+  const resultsRef = useRef<HTMLDivElement>(null);
+
+  // ─── Build query with filters ─────────────────────────────────────
+  
+  const buildQuery = (): string => {
+    let query = intent.trim();
+    const additions: string[] = [];
+    if (quickFilters.difficulty) additions.push(`${quickFilters.difficulty} difficulty`);
+    if (quickFilters.dogFriendly) additions.push('dog-friendly');
+    if (quickFilters.kidFriendly) additions.push('kid-friendly');
+    if (quickFilters.maxDistance) additions.push(`max ${quickFilters.maxDistance}`);
+    if (additions.length > 0) {
+      query += `. Additional preferences: ${additions.join(', ')}.`;
+    }
+    return query;
+  };
+
+  // ─── Run the multi-agent pipeline ─────────────────────────────────
+  
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!intent.trim()) return;
+    const query = buildQuery();
+    if (!query) return;
 
-    setIsSearching(true);
-    setRegionFocus(null);
+    setError('');
+    setScreen('workflow');
+    setAgentStage('idle');
+    setCandidates([]);
+    setValidations([]);
+    setTripPlan(null);
+    setSelectedTrailIndex(0);
+    setIntentSummary('');
+    setResearchSummary('');
+    setValidationSummary('');
+    setActionSummary('');
+
+    // Scroll to top
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+
     try {
-      const prefs = await parseUserIntent(intent);
-      setReasoning(prefs.reasoning);
-      setRegionFocus(prefs.estimatedRegionName);
+      // ── Agent 1: Intent ──────────────────────────────────────────
+      setAgentStage('intent');
+      const profile = await runIntentAgent(query);
+      setIntentProfile(profile);
+      setIntentSummary(profile.reasoning);
 
-      const bbox = prefs.bbox || { minLat: 46.51, maxLat: 46.54, minLon: 6.61, maxLon: 6.64 }; // Tighter bbox fallback to prevent OSM timeout
-      const results = await fetchTrailsInBBox(bbox.minLat, bbox.minLon, bbox.maxLat, bbox.maxLon);
-      const rankedTrails = scoreAndFilterTrails(results, prefs).slice(0, 15);
+      // ── Fetch trails from OSM (between agents) ──────────────────
+      const bbox = profile.bbox;
+      const rawTrails = await fetchTrailsInBBox(bbox.minLat, bbox.minLon, bbox.maxLat, bbox.maxLon);
+      const legacyPrefs = intentToLegacyPrefs(profile);
+      const scored = scoreAndFilterTrails(rawTrails, legacyPrefs).slice(0, 20);
       
-      setAvailableTrails(rankedTrails);
-      setItineraryTrails([]);
+      // Enrich with distance
+      const enriched = scored.map(t => ({
+        ...t,
+        distanceKm: calculateDistance(t.path),
+      }));
+      setTrails(enriched);
 
-      document.getElementById('preview')?.scrollIntoView({ behavior: 'smooth' });
-    } catch (error) {
-      console.error('Search failed:', error);
-      setReasoning("I encountered an error analyzing your request, please try again.");
-    } finally {
-      setIsSearching(false);
-    }
-  };
-
-  const onDragEnd = (result: DropResult) => {
-    const { source, destination } = result;
-    if (!destination) return;
-    if (source.droppableId === destination.droppableId && source.index === destination.index) return;
-
-    const startList = source.droppableId === 'available' ? availableTrails : itineraryTrails;
-    const endList = destination.droppableId === 'available' ? availableTrails : itineraryTrails;
-
-    if (startList === endList) {
-      const newList = Array.from(startList);
-      const [removed] = newList.splice(source.index, 1);
-      newList.splice(destination.index, 0, removed);
-      
-      if (source.droppableId === 'available') setAvailableTrails(newList);
-      else setItineraryTrails(newList);
-    } else {
-      const startCopy = Array.from(startList);
-      const endCopy = Array.from(endList);
-      const [removed] = startCopy.splice(source.index, 1);
-      endCopy.splice(destination.index, 0, removed);
-
-      if (source.droppableId === 'available') {
-        setAvailableTrails(startCopy);
-        setItineraryTrails(endCopy);
-      } else {
-        setItineraryTrails(startCopy);
-        setAvailableTrails(endCopy);
+      if (enriched.length === 0) {
+        setError('No trails found in this area. Try a different location or wider search.');
+        setAgentStage('idle');
+        setScreen('home');
+        return;
       }
+
+      // ── Agent 2: Research ────────────────────────────────────────
+      setAgentStage('research');
+      const researchResults = await runResearchAgent(profile, enriched);
+      setCandidates(researchResults);
+      setResearchSummary(`Found ${researchResults.length} strong candidates in ${profile.estimatedRegionName}. Top match: ${researchResults[0]?.trailName || 'N/A'} (${researchResults[0]?.matchScore || 0}%).`);
+
+      // ── Agent 3: Validation ──────────────────────────────────────
+      setAgentStage('validation');
+      const validationResults = await runValidationAgent(profile, researchResults);
+      setValidations(validationResults);
+      const recommended = validationResults.filter(v => v.isRecommended).length;
+      const topFit = validationResults[0]?.overallFit || 'unknown';
+      setValidationSummary(`${recommended} trails passed validation. Top trail rated "${topFit}" with ${validationResults[0]?.confidenceScore || 0}% confidence.`);
+
+      // ── Agent 4: Action ──────────────────────────────────────────
+      setAgentStage('action');
+      const topCandidate = researchResults[0];
+      const topValidation = validationResults[0];
+      const backupCandidate = researchResults.length > 1 ? researchResults[1] : undefined;
+      
+      const plan = await runActionAgent(profile, topCandidate, topValidation, backupCandidate);
+      setTripPlan(plan);
+      setActionSummary(`Trip plan ready: Depart ${plan.departureTime}, return by ${plan.expectedReturnTime}. ${plan.whatToBring.length} items to bring.`);
+
+      // ── Complete ─────────────────────────────────────────────────
+      setAgentStage('complete');
+
+      // Auto-transition to results after a brief pause
+      setTimeout(() => {
+        setScreen('results');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }, 2000);
+    } catch (err) {
+      console.error('Pipeline error:', err);
+      setError('Something went wrong in the planning pipeline. Please try again.');
+      setAgentStage('idle');
+      setScreen('home');
     }
   };
 
-  const shortlistStats = {
-    count: itineraryTrails.length,
-    distance: itineraryTrails.reduce((acc, t) => acc + calculateDistance(t.path), 0).toFixed(1),
-    isStrenuous: itineraryTrails.some(t => t.tags.sac_scale && ['mountain_hiking', 't3', 't4', 't5', 't6'].some(s => t.tags.sac_scale?.includes(s)))
+  // ─── Find matching trail data for a candidate ─────────────────────
+  
+  const findTrailForCandidate = (candidate: TrailCandidate): TrailData | undefined => {
+    return trails.find(t => t.id === candidate.trailId) || trails[0];
   };
 
-  const downloadExpedition = () => {
-    if (itineraryTrails.length === 0) return;
-    
-    let content = `# TrailScout Expedition Plan\n`;
-    content += `Region: ${regionFocus || 'Custom Selection'}\n`;
-    content += `Total Distance: ${shortlistStats.distance}km\n`;
-    content += `Effort Level: ${shortlistStats.isStrenuous ? 'High' : 'Moderate'}\n\n`;
-    content += `## Shortlisted Trails\n\n`;
-    
-    itineraryTrails.forEach((t, i) => {
-      content += `${i+1}. ${t.name || 'Unnamed Trail'} (${calculateDistance(t.path).toFixed(2)}km)\n`;
-      if (t.tags.difficulty) content += `   - Difficulty: ${t.tags.difficulty}\n`;
-      if (t.tags.surface) content += `   - Terrain: ${t.tags.surface}\n`;
-      content += `\n`;
-    });
-    
-    const blob = new Blob([content], { type: 'text/markdown' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `trailscout_expedition_${regionFocus?.toLowerCase().replace(/\s+/g, '_') || 'plan'}.md`;
-    a.click();
-    URL.revokeObjectURL(url);
+  // ─── Reset to home ────────────────────────────────────────────────
+  
+  const goHome = () => {
+    setScreen('home');
+    setAgentStage('idle');
   };
+
+  // ═══════════════════════════════════════════════════════════════════
+  // ─── RENDER ─────────────────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════
 
   return (
-    <div className="min-h-screen bg-navy selection:bg-teal selection:text-navy">
-      <Navbar />
-      
-      {/* Hero Section */}
-      <section className="relative pt-32 pb-20 md:pt-48 md:pb-32 overflow-hidden bg-navy">
-        <div className="absolute inset-0 z-0">
-          <img 
-            src="https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&q=80&w=2000" 
-            alt="Mountain Background" 
-            className="w-full h-full object-cover opacity-30"
-            referrerPolicy="no-referrer"
-          />
-          <div className="absolute inset-0 bg-gradient-to-b from-navy/80 via-navy/60 to-navy" />
-        </div>
+    <div className="min-h-screen bg-navy selection:bg-teal/30 selection:text-offwhite">
+      <Navbar onLogoClick={goHome} />
 
-        <div className="max-w-7xl mx-auto px-6 relative z-10 text-center">
+      {/* Error toast */}
+      <AnimatePresence>
+        {error && (
           <motion.div
-            initial={{ opacity: 0, y: 30 }}
+            initial={{ opacity: 0, y: -50 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.8 }}
-            className="max-w-4xl mx-auto"
+            exit={{ opacity: 0, y: -50 }}
+            className="fixed top-20 left-1/2 -translate-x-1/2 z-50 bg-red/20 border border-red/30 text-red px-6 py-3 rounded-2xl text-sm font-medium backdrop-blur-xl"
           >
-            <div className="inline-flex items-center gap-2 bg-white/10 backdrop-blur-md text-teal px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider mb-8 border border-white/10">
-              <Compass className="w-3 h-3" />
-              TrailScout Alpine Kinetic
-            </div>
-            
-            <h1 className="font-display text-6xl md:text-8xl font-bold text-offwhite leading-[1] mb-8">
-              Describe your <br />
-              <span className="text-orange italic">ideal hike.</span>
-            </h1>
-            
-            <p className="text-lg md:text-xl text-offwhite/70 max-w-2xl mx-auto mb-12 leading-relaxed">
-              Our Digital Sherpa uses intent-based planning to find trails that match your mood, pace, and thirst for adventure.
-            </p>
+            {error}
+            <button onClick={() => setError('')} className="ml-4 text-red/60 hover:text-red">✕</button>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
-            <form onSubmit={handleSearch} className="max-w-2xl mx-auto bg-white/5 backdrop-blur-xl border border-white/10 rounded-full p-2 flex items-center mb-12 shadow-2xl">
-              <div className="pl-6 pr-4">
-                <MapIcon className="text-offwhite/40 w-5 h-5" />
-              </div>
-              <input 
-                type="text" 
-                value={intent}
-                onChange={(e) => setIntent(e.target.value)}
-                placeholder="e.g. A challenging ridge walk with lake views..." 
-                className="flex-1 bg-transparent border-none text-offwhite placeholder:text-offwhite/30 focus:ring-0 text-lg"
+      {/* ═══════════════════════════════════════════════════════════════ */}
+      {/* HOME SCREEN                                                    */}
+      {/* ═══════════════════════════════════════════════════════════════ */}
+      {screen === 'home' && (
+        <>
+          {/* Hero */}
+          <section className="relative min-h-screen flex items-center justify-center overflow-hidden">
+            {/* Background */}
+            <div className="absolute inset-0 z-0">
+              <img
+                src="https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&q=80&w=2000"
+                alt="Mountain landscape"
+                className="w-full h-full object-cover opacity-25"
+                referrerPolicy="no-referrer"
               />
-              <button 
-                type="submit"
-                disabled={isSearching}
-                className="bg-orange text-offwhite px-8 py-4 rounded-full font-bold text-lg hover:bg-peach hover:text-navy transition-all flex items-center gap-2 disabled:opacity-50"
-              >
-                {isSearching ? 'Analyzing...' : 'Start Planning'} <ArrowRight className="w-5 h-5" />
-              </button>
-            </form>
+              <div className="gradient-hero absolute inset-0" />
+            </div>
 
-            {reasoning && (
-              <motion.div 
-                initial={{ opacity: 0 }} 
-                animate={{ opacity: 1 }}
-                className="bg-white/5 border border-teal/20 p-6 rounded-3xl max-w-2xl mx-auto mb-12 text-teal text-sm italic"
+            {/* Subtle grid pattern */}
+            <div className="absolute inset-0 z-0" style={{
+              backgroundImage: 'radial-gradient(circle at 1px 1px, rgba(3,212,189,0.03) 1px, transparent 0)',
+              backgroundSize: '40px 40px',
+            }} />
+
+            <div className="relative z-10 max-w-5xl mx-auto px-6 text-center pt-24 pb-16">
+              <motion.div
+                initial={{ opacity: 0, y: 30 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.8 }}
               >
-                "{reasoning}"
+                {/* Badge */}
+                <div className="inline-flex items-center gap-2 bg-white/5 backdrop-blur-md border border-white/10 px-4 py-2 rounded-full mb-8">
+                  <Sparkles className="w-3.5 h-3.5 text-teal" />
+                  <span className="text-xs font-semibold text-teal uppercase tracking-wider">
+                    Powered by 4 AI Agents
+                  </span>
+                </div>
+
+                {/* Headline */}
+                <h1 className="font-display text-5xl sm:text-6xl md:text-7xl lg:text-8xl font-black text-offwhite leading-[0.95] mb-6">
+                  Describe your<br />
+                  <span className="text-gradient-warm">perfect hike.</span>
+                </h1>
+
+                <p className="text-lg md:text-xl text-offwhite/50 max-w-2xl mx-auto mb-10 leading-relaxed">
+                  TrailScout's multi-agent engine interprets your intent, researches real trail data,
+                  validates conditions, and delivers an actionable trip plan.
+                </p>
+
+                {/* Search form */}
+                <form onSubmit={handleSearch} className="max-w-2xl mx-auto mb-6">
+                  <div className="glass rounded-2xl p-2 shadow-2xl">
+                    <div className="flex items-center gap-3">
+                      <div className="pl-4">
+                        <MapIcon className="text-offwhite/30 w-5 h-5" />
+                      </div>
+                      <input
+                        type="text"
+                        id="hiking-intent-input"
+                        value={intent}
+                        onChange={(e) => setIntent(e.target.value)}
+                        placeholder="e.g. A moderate hike with lake views near Seattle, dog-friendly..."
+                        className="flex-1 bg-transparent border-none text-offwhite placeholder:text-offwhite/25 focus:ring-0 focus:outline-none text-base py-4"
+                      />
+                      <button
+                        type="submit"
+                        id="plan-my-hike-btn"
+                        disabled={!intent.trim() && agentStage !== 'idle'}
+                        className="gradient-orange text-navy px-6 py-3.5 rounded-xl font-bold text-sm hover:shadow-lg hover:shadow-orange/20 transition-all flex items-center gap-2 disabled:opacity-40 whitespace-nowrap"
+                      >
+                        Plan My Hike <ArrowRight className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                </form>
+
+                {/* Quick filters toggle */}
+                <button
+                  onClick={() => setShowFilters(!showFilters)}
+                  className="text-xs text-offwhite/30 hover:text-offwhite/60 transition-colors flex items-center gap-1 mx-auto mb-4"
+                >
+                  Quick preferences <ChevronDown className={`w-3 h-3 transition-transform ${showFilters ? 'rotate-180' : ''}`} />
+                </button>
+
+                {/* Quick filters */}
+                <AnimatePresence>
+                  {showFilters && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: 'auto' }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="max-w-2xl mx-auto mb-8"
+                    >
+                      <div className="glass rounded-2xl p-4 flex flex-wrap gap-3 justify-center">
+                        {/* Difficulty */}
+                        <select
+                          value={quickFilters.difficulty}
+                          onChange={(e) => setQuickFilters(f => ({ ...f, difficulty: e.target.value }))}
+                          className="bg-white/5 border border-white/10 text-offwhite/70 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-teal"
+                        >
+                          <option value="">Difficulty</option>
+                          <option value="easy">Easy</option>
+                          <option value="moderate">Moderate</option>
+                          <option value="hard">Hard</option>
+                          <option value="expert">Expert</option>
+                        </select>
+
+                        {/* Max distance */}
+                        <select
+                          value={quickFilters.maxDistance}
+                          onChange={(e) => setQuickFilters(f => ({ ...f, maxDistance: e.target.value }))}
+                          className="bg-white/5 border border-white/10 text-offwhite/70 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-teal"
+                        >
+                          <option value="">Max Distance</option>
+                          <option value="3 miles">3 miles</option>
+                          <option value="5 miles">5 miles</option>
+                          <option value="7 miles">7 miles</option>
+                          <option value="10 miles">10 miles</option>
+                          <option value="15 miles">15 miles</option>
+                        </select>
+
+                        {/* Dog friendly */}
+                        <button
+                          onClick={() => setQuickFilters(f => ({ ...f, dogFriendly: !f.dogFriendly }))}
+                          className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium border transition-all ${
+                            quickFilters.dogFriendly
+                              ? 'bg-teal/20 border-teal/30 text-teal'
+                              : 'bg-white/5 border-white/10 text-offwhite/50'
+                          }`}
+                        >
+                          <Dog className="w-3.5 h-3.5" /> Dog-friendly
+                        </button>
+
+                        {/* Kid friendly */}
+                        <button
+                          onClick={() => setQuickFilters(f => ({ ...f, kidFriendly: !f.kidFriendly }))}
+                          className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium border transition-all ${
+                            quickFilters.kidFriendly
+                              ? 'bg-teal/20 border-teal/30 text-teal'
+                              : 'bg-white/5 border-white/10 text-offwhite/50'
+                          }`}
+                        >
+                          <Baby className="w-3.5 h-3.5" /> Kid-friendly
+                        </button>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                {/* Prompt chips */}
+                <div className="max-w-3xl mx-auto">
+                  <p className="text-[10px] text-offwhite/20 uppercase tracking-widest mb-3">Try an example</p>
+                  <div className="flex flex-wrap gap-2 justify-center">
+                    {promptChips.map((chip, i) => (
+                      <button
+                        key={i}
+                        onClick={() => setIntent(chip)}
+                        className="bg-white/5 hover:bg-white/10 border border-white/5 hover:border-teal/20 text-offwhite/40 hover:text-offwhite/70 px-3 py-1.5 rounded-full text-[11px] transition-all text-left max-w-xs truncate"
+                      >
+                        {chip}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </motion.div>
+            </div>
+          </section>
+
+          {/* How it works */}
+          <section id="how-it-works" className="py-24 border-t border-white/5">
+            <div className="max-w-6xl mx-auto px-6">
+              <div className="text-center mb-16">
+                <h2 className="font-display text-4xl md:text-5xl font-bold text-offwhite mb-4">
+                  Four agents. <span className="text-gradient-teal">One perfect plan.</span>
+                </h2>
+                <p className="text-offwhite/40 text-lg max-w-xl mx-auto">
+                  TrailScout isn't a chatbot — it's a multi-agent system where specialized AI agents collaborate behind the scenes.
+                </p>
+              </div>
+
+              <div className="grid md:grid-cols-4 gap-6">
+                {[
+                  {
+                    icon: Brain,
+                    name: 'Intent Agent',
+                    desc: 'Parses your natural language into structured preferences — location, difficulty, constraints, and hidden intent.',
+                    color: '#A78BFA',
+                    num: '01',
+                  },
+                  {
+                    icon: Search,
+                    name: 'Research Agent',
+                    desc: 'Searches real trail databases, enriches with weather data, drive times, crowd estimates, and scenery analysis.',
+                    color: '#60A5FA',
+                    num: '02',
+                  },
+                  {
+                    icon: ShieldCheck,
+                    name: 'Validation Agent',
+                    desc: 'Checks every trail against your constraints. Flags risks, tradeoffs, and missing data with confidence scores.',
+                    color: '#03D4BD',
+                    num: '03',
+                  },
+                  {
+                    icon: Zap,
+                    name: 'Action Agent',
+                    desc: 'Builds your trip plan with departure time, packing list, safety notes, backup options, and calendar events.',
+                    color: '#FF7D0F',
+                    num: '04',
+                  },
+                ].map(({ icon: Icon, name, desc, color, num }) => (
+                  <motion.div
+                    key={name}
+                    initial={{ opacity: 0, y: 20 }}
+                    whileInView={{ opacity: 1, y: 0 }}
+                    viewport={{ once: true }}
+                    className="glass-bright rounded-2xl p-6 group hover:scale-[1.02] transition-transform"
+                  >
+                    <div className="flex items-center gap-3 mb-4">
+                      <div
+                        className="w-10 h-10 rounded-xl flex items-center justify-center"
+                        style={{ backgroundColor: `${color}20` }}
+                      >
+                        <Icon className="w-5 h-5" style={{ color }} />
+                      </div>
+                      <span className="text-[10px] font-bold uppercase tracking-widest" style={{ color: `${color}80` }}>
+                        Agent {num}
+                      </span>
+                    </div>
+                    <h3 className="font-display font-bold text-lg text-offwhite mb-2">{name}</h3>
+                    <p className="text-sm text-offwhite/40 leading-relaxed">{desc}</p>
+                  </motion.div>
+                ))}
+              </div>
+            </div>
+          </section>
+
+          {/* Features */}
+          <section id="features" className="py-24 border-t border-white/5">
+            <div className="max-w-6xl mx-auto px-6">
+              <div className="grid md:grid-cols-3 gap-6">
+                {[
+                  {
+                    title: 'Intent-Based Planning',
+                    desc: "Describe how you want to feel — adventurous, peaceful, challenged — and we'll find the trail that matches.",
+                    icon: <Wind className="w-6 h-6 text-orange" />,
+                  },
+                  {
+                    title: 'Data-Grounded Results',
+                    desc: 'Every recommendation is backed by real OpenStreetMap trail data, not generic suggestions.',
+                    icon: <Mountain className="w-6 h-6 text-teal" />,
+                  },
+                  {
+                    title: 'Actionable Trip Plans',
+                    desc: 'Get departure times, packing lists, calendar events, and backup options — ready to go.',
+                    icon: <Compass className="w-6 h-6 text-purple" />,
+                  },
+                ].map((item, i) => (
+                  <motion.div
+                    key={i}
+                    initial={{ opacity: 0, y: 20 }}
+                    whileInView={{ opacity: 1, y: 0 }}
+                    viewport={{ once: true }}
+                    transition={{ delay: i * 0.1 }}
+                    className="glass-bright p-8 rounded-2xl group hover:scale-[1.02] transition-transform"
+                  >
+                    <div className="mb-6 bg-white/5 p-3.5 rounded-xl inline-block border border-white/5 group-hover:border-teal/20 transition-colors">
+                      {item.icon}
+                    </div>
+                    <h3 className="font-display text-xl font-bold text-offwhite mb-3">{item.title}</h3>
+                    <p className="text-offwhite/40 leading-relaxed text-sm">{item.desc}</p>
+                  </motion.div>
+                ))}
+              </div>
+            </div>
+          </section>
+
+          {/* Footer */}
+          <footer className="py-12 border-t border-white/5">
+            <div className="max-w-6xl mx-auto px-6 flex flex-col md:flex-row justify-between items-center gap-4">
+              <div className="flex items-center gap-2">
+                <Compass className="text-teal w-5 h-5" />
+                <span className="font-display font-bold text-offwhite">TrailScout</span>
+              </div>
+              <p className="text-offwhite/20 text-[10px] uppercase tracking-widest">
+                Data: OpenStreetMap · AI: Google Gemini · Multi-Agent Architecture
+              </p>
+            </div>
+          </footer>
+        </>
+      )}
+
+      {/* ═══════════════════════════════════════════════════════════════ */}
+      {/* WORKFLOW SCREEN                                                */}
+      {/* ═══════════════════════════════════════════════════════════════ */}
+      {screen === 'workflow' && (
+        <section className="min-h-screen pt-28 pb-20 px-6">
+          <div className="max-w-4xl mx-auto">
+            {/* User query display */}
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="glass-bright rounded-2xl p-5 mb-8 flex items-start gap-4"
+            >
+              <div className="bg-orange/20 p-2 rounded-xl flex-shrink-0">
+                <MapIcon className="w-5 h-5 text-orange" />
+              </div>
+              <div>
+                <div className="text-[10px] text-offwhite/30 uppercase tracking-wider mb-1">Your Request</div>
+                <p className="text-sm text-offwhite/80 leading-relaxed">{intent}</p>
+              </div>
+            </motion.div>
+
+            {/* Agent workflow visualization */}
+            <AgentWorkflow
+              currentStage={agentStage}
+              intentSummary={intentSummary}
+              researchSummary={researchSummary}
+              validationSummary={validationSummary}
+              actionSummary={actionSummary}
+            />
+          </div>
+        </section>
+      )}
+
+      {/* ═══════════════════════════════════════════════════════════════ */}
+      {/* RESULTS SCREEN                                                 */}
+      {/* ═══════════════════════════════════════════════════════════════ */}
+      {screen === 'results' && (
+        <section className="min-h-screen pt-24 pb-20 px-6" ref={resultsRef}>
+          <div className="max-w-6xl mx-auto">
+            {/* Header */}
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="text-center mb-12"
+            >
+              <div className="inline-flex items-center gap-2 bg-green/10 border border-green/20 px-4 py-2 rounded-full mb-4">
+                <ShieldCheck className="w-3.5 h-3.5 text-green" />
+                <span className="text-xs font-semibold text-green uppercase tracking-wider">
+                  {candidates.length} Trails Analyzed & Validated
+                </span>
+              </div>
+              <h2 className="font-display text-4xl md:text-5xl font-bold text-offwhite mb-3">
+                Your Top Matches
+              </h2>
+              <p className="text-offwhite/40 max-w-lg mx-auto">
+                {intentProfile?.estimatedRegionName && (
+                  <span className="text-teal font-medium">{intentProfile.estimatedRegionName}</span>
+                )}{' '}
+                — ranked by fit, validated against your constraints.
+              </p>
+            </motion.div>
+
+            {/* Map */}
+            {trails.length > 0 && (
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.1 }}
+                className="h-[350px] w-full mb-10"
+              >
+                <MapContainer
+                  trails={trails.slice(0, 5).map((t, i) => ({
+                    ...t,
+                    tags: { ...t.tags, color: i === selectedTrailIndex ? '#FF7D0F' : '#03D4BD' }
+                  }))}
+                  focusedTrailId={trails[selectedTrailIndex]?.id || null}
+                />
               </motion.div>
             )}
-          </motion.div>
-        </div>
-      </section>
 
-      {/* Presentation Layer: Interactive Map & Tiles */}
-      <section id="preview" className="py-32 bg-navy border-t border-white/5">
-        <div className="max-w-7xl mx-auto px-6">
-          <div className="text-center mb-16">
-            <h2 className="text-5xl font-display font-bold text-offwhite mb-4">
-              Live Expedition Map {regionFocus && <span className="text-teal text-3xl block mt-2">📍 {regionFocus}</span>}
-            </h2>
-            <p className="text-offwhite/50 text-lg">Drag your curated trail recommendations onto your Shortlist.</p>
-          </div>
-          
-          <div className="flex flex-col gap-8">
-            {/* Map Section (Full Width Above) */}
-            <div className="h-[450px] w-full">
-              <MapContainer trails={[
-                ...availableTrails.map(t => ({...t, tags: {...t.tags, color: '#334155'}})), // dim available trails
-                ...itineraryTrails.map(t => ({...t, tags: {...t.tags, color: '#FF7D0F'}})) // highlight with Apricot Orange
-              ]} />
+            {/* Results grid */}
+            <div className="grid md:grid-cols-3 gap-6 mb-12">
+              {candidates.slice(0, 3).map((candidate, idx) => {
+                const trail = findTrailForCandidate(candidate);
+                const validation = validations.find(v => v.trailId === candidate.trailId);
+                if (!trail) return null;
+
+                return (
+                  <TrailResultCard
+                    key={candidate.trailId}
+                    trail={trail}
+                    candidate={candidate}
+                    validation={validation}
+                    rank={idx}
+                    isSelected={selectedTrailIndex === idx}
+                    onSelect={() => {
+                      setSelectedTrailIndex(idx);
+                      // Show the plan for the selected trail
+                    }}
+                  />
+                );
+              })}
             </div>
-            
-            <DragDropContext onDragEnd={onDragEnd}>
-              <div className="grid grid-cols-2 gap-8">
-                {/* Recommendations Column */}
-                <Droppable droppableId="available">
-                {(provided) => (
-                  <div 
-                    ref={provided.innerRef} 
-                    {...provided.droppableProps}
-                    className="flex flex-col gap-4 overflow-y-auto h-[800px] pr-2 bg-white/5 p-4 rounded-3xl"
-                  >
-                    <h3 className="font-bold text-offwhite text-lg border-b border-white/10 pb-2 mb-2">Recommended</h3>
-                    {availableTrails.map((trail, index) => (
-                      <Draggable {...{ key: `avail-${trail.id}`, draggableId: `avail-${trail.id}`, index } as any}>
-                        {(provided: any) => (
-                          <div 
-                            ref={provided.innerRef}
-                            {...provided.draggableProps}
-                            {...provided.dragHandleProps}
-                            className="bg-navy/80 backdrop-blur-md border border-white/10 p-5 rounded-[2rem] hover:border-teal/30 transition-all shadow-lg select-none"
-                          >
-                            <div className="flex justify-between items-start mb-2">
-                              <h3 className="font-bold text-md text-offwhite pr-4">
-                                <span className="text-offwhite/40 mr-2">#{index + 1}</span>
-                                {trail.name || 'Unnamed Trail'}
-                              </h3>
-                              <span className="text-teal font-bold text-xs whitespace-nowrap bg-teal/10 px-2 py-1 rounded-md">
-                                {calculateDistance(trail.path).toFixed(1)} km
-                              </span>
-                            </div>
-                            <div className="flex flex-wrap gap-2">
-                              <span className="text-[10px] uppercase tracking-wider bg-teal/20 px-2 py-1 rounded-full text-teal flex items-center gap-1">
-                                <Clock className="w-3 h-3" /> {getEstimatedTime(calculateDistance(trail.path))}
-                              </span>
-                              <span className="text-[10px] uppercase tracking-wider bg-white/5 px-2 py-1 rounded-full text-offwhite/70">
-                                {trail.tags.highway ? trail.tags.highway.replace(/_/g, ' ') : 'hiking route'}
-                              </span>
-                              <span className="text-[10px] uppercase tracking-wider bg-white/5 px-2 py-1 rounded-full text-offwhite/70">
-                                {trail.tags.surface ? trail.tags.surface.replace(/_/g, ' ') : 'mixed terrain'}
-                              </span>
-                              <span className="text-[10px] uppercase tracking-wider bg-orange/10 px-2 py-1 rounded-full text-orange">
-                                {trail.tags.sac_scale ? trail.tags.sac_scale.replace('hiking', '').replace('_', ' ') : 'unrated'}
-                              </span>
-                              {trail.tags.ele && <span className="text-[10px] uppercase tracking-wider bg-white/5 px-2 py-1 rounded-full text-offwhite/70 flex items-center gap-1"><Mountain className="w-3 h-3" /> {trail.tags.ele}m</span>}
-                              {trail.tags.incline && <span className="text-[10px] uppercase tracking-wider bg-white/5 px-2 py-1 rounded-full text-offwhite/70 flex items-center gap-1">Incline: {trail.tags.incline}</span>}
-                              {trail.tags.dog && trail.tags.dog !== 'no' && <span className="text-[10px] uppercase tracking-wider bg-white/5 px-2 py-1 rounded-full text-offwhite/70 flex items-center gap-1"><Dog className="w-3 h-3" /> {trail.tags.dog === 'yes' ? 'Allowed' : trail.tags.dog}</span>}
-                              {trail.tags.trail_visibility && <span className="text-[10px] uppercase tracking-wider bg-white/5 px-2 py-1 rounded-full text-offwhite/70 flex items-center gap-1"><Compass className="w-3 h-3" /> {trail.tags.trail_visibility}</span>}
-                            </div>
-                            <p className="text-xs text-offwhite/50 mt-4 leading-relaxed italic border-l-2 border-teal/30 pl-3 py-0.5">
-                              {getTrailDescription(trail)}
-                            </p>
-                          </div>
-                        )}
-                      </Draggable>
-                    ))}
-                    {provided.placeholder}
-                    {availableTrails.length === 0 && <div className="text-center opacity-30 mt-10">No matches yet. Search above!</div>}
-                  </div>
-                )}
-              </Droppable>
 
-              {/* Shortlist Column */}
-              <Droppable droppableId="itinerary">
-                {(provided) => (
-                  <div 
-                    ref={provided.innerRef} 
-                    {...provided.droppableProps}
-                    className="flex flex-col gap-4 overflow-y-auto h-[800px] pr-2 bg-teal/5 border border-teal/20 p-4 rounded-3xl"
-                  >
-                    <div className="flex justify-between items-center border-b border-teal/20 pb-2 mb-2">
-                       <h3 className="font-bold text-teal text-lg">My Shortlist</h3>
-                       {shortlistStats.count > 0 && (
-                         <div className="flex gap-2 items-center">
-                           <span className="bg-teal/20 text-teal text-[10px] px-2 py-0.5 rounded-full font-bold">{shortlistStats.distance}km</span>
-                           <button 
-                             onClick={downloadExpedition}
-                             className="p-1.5 hover:bg-teal/20 rounded-lg text-teal transition-colors"
-                             title="Download Expedition Summary"
-                           >
-                              <Download className="w-4 h-4" />
-                           </button>
-                         </div>
-                       )}
-                    </div>
+            {/* View trip plan CTA */}
+            {tripPlan && (
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.5 }}
+                className="text-center"
+              >
+                <button
+                  onClick={() => {
+                    setScreen('plan');
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                  }}
+                  className="gradient-orange text-navy px-8 py-4 rounded-2xl font-bold text-lg hover:shadow-lg hover:shadow-orange/20 transition-all inline-flex items-center gap-3 glow-orange"
+                >
+                  <Zap className="w-5 h-5" />
+                  View Full Trip Plan
+                  <ArrowRight className="w-5 h-5" />
+                </button>
+                <p className="text-offwhite/20 text-xs mt-3">
+                  Includes departure time, packing list, calendar event, and backup option
+                </p>
+              </motion.div>
+            )}
 
-                    {shortlistStats.count > 0 && (
-                      <div className="bg-teal/10 p-3 rounded-2xl border border-teal/30 mb-2">
-                        <p className="text-[10px] text-teal/80 font-bold uppercase tracking-tight mb-1">Adventure Summary</p>
-                        <div className="flex items-center gap-3 text-offwhite text-xs">
-                          <div className="flex items-center gap-1">
-                            <Navigation className="w-3 h-3 text-teal" />
-                            <span>{shortlistStats.count} segments</span>
-                          </div>
-                          <div className="flex items-center gap-1">
-                            <Sun className="w-3 h-3 text-orange" />
-                            <span>{shortlistStats.isStrenuous ? 'High Effort' : 'Easy Pace'}</span>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                    {itineraryTrails.map((trail, index) => (
-                      <Draggable {...{ key: `itin-${trail.id}`, draggableId: `itin-${trail.id}`, index } as any}>
-                        {(provided: any) => (
-                          <div 
-                            ref={provided.innerRef}
-                            {...provided.draggableProps}
-                            {...provided.dragHandleProps}
-                            className="bg-teal/10 backdrop-blur-md border border-teal/30 p-5 rounded-[2rem] shadow-lg select-none"
-                          >
-                            <div className="flex justify-between items-start mb-2">
-                              <h3 className="font-bold text-md text-offwhite pr-4">{trail.name || 'Unnamed Trail'}</h3>
-                              <span className="text-teal font-bold text-xs whitespace-nowrap bg-navy/50 px-2 py-1 rounded-md">
-                                {calculateDistance(trail.path).toFixed(1)} km
-                              </span>
-                            </div>
-                            <div className="flex flex-wrap gap-2">
-                              <span className="text-[10px] uppercase tracking-wider bg-teal/20 px-2 py-1 rounded-full text-teal flex items-center gap-1">
-                                <Clock className="w-3 h-3" /> {getEstimatedTime(calculateDistance(trail.path))}
-                              </span>
-                              <span className="text-[10px] uppercase tracking-wider bg-navy/50 px-2 py-1 rounded-full text-offwhite/70">
-                                {trail.tags.highway ? trail.tags.highway.replace(/_/g, ' ') : 'hiking route'}
-                              </span>
-                              <span className="text-[10px] uppercase tracking-wider bg-navy/50 px-2 py-1 rounded-full text-offwhite/70">
-                                {trail.tags.surface ? trail.tags.surface.replace(/_/g, ' ') : 'mixed terrain'}
-                              </span>
-                              <span className="text-[10px] uppercase tracking-wider bg-orange/20 px-2 py-1 rounded-full text-orange">
-                                {trail.tags.sac_scale ? trail.tags.sac_scale.replace('hiking', '').replace('_', ' ') : 'unrated'}
-                              </span>
-                              {trail.tags.ele && <span className="text-[10px] uppercase tracking-wider bg-navy/50 px-2 py-1 rounded-full text-offwhite/70 flex items-center gap-1"><Mountain className="w-3 h-3" /> {trail.tags.ele}m</span>}
-                              {trail.tags.incline && <span className="text-[10px] uppercase tracking-wider bg-navy/50 px-2 py-1 rounded-full text-offwhite/70 flex items-center gap-1">Incline: {trail.tags.incline}</span>}
-                              {trail.tags.dog && trail.tags.dog !== 'no' && <span className="text-[10px] uppercase tracking-wider bg-navy/50 px-2 py-1 rounded-full text-offwhite/70 flex items-center gap-1"><Dog className="w-3 h-3" /> {trail.tags.dog === 'yes' ? 'Allowed' : trail.tags.dog}</span>}
-                              {trail.tags.trail_visibility && <span className="text-[10px] uppercase tracking-wider bg-navy/50 px-2 py-1 rounded-full text-offwhite/70 flex items-center gap-1"><Compass className="w-3 h-3" /> {trail.tags.trail_visibility}</span>}
-                            </div>
-                            <p className="text-xs text-teal/70 mt-4 leading-relaxed italic border-l-2 border-teal/50 pl-3 py-0.5">
-                              {getTrailDescription(trail)}
-                            </p>
-                          </div>
-                        )}
-                      </Draggable>
-                    ))}
-                    {provided.placeholder}
-                    {itineraryTrails.length === 0 && (
-                       <div className="flex-1 flex items-center justify-center text-center opacity-40 p-4 border-2 border-dashed border-teal/20 rounded-2xl mt-4 text-xs font-bold text-teal">
-                         Drag trails here to save them.
-                       </div>
-                    )}
-                  </div>
-                )}
-              </Droppable>
+            {/* New search */}
+            <div className="text-center mt-12">
+              <button
+                onClick={goHome}
+                className="text-sm text-offwhite/30 hover:text-teal transition-colors"
+              >
+                ← Start a new search
+              </button>
             </div>
-          </DragDropContext>
           </div>
-        </div>
-      </section>
+        </section>
+      )}
 
-      <ProblemSection />
-      <WaitlistForm />
-      
-      <footer className="bg-navy text-offwhite pt-32 pb-16 border-t border-white/5">
-        <div className="max-w-7xl mx-auto px-6 flex flex-col md:row justify-between items-center gap-12 text-center md:text-left">
-          <div>
-            <div className="flex items-center gap-2 mb-4 justify-center md:justify-start">
-              <Compass className="text-teal w-8 h-8" />
-              <span className="font-display font-bold text-2xl tracking-tight">TrailScout</span>
-            </div>
-            <p className="text-offwhite/40 text-[10px] uppercase tracking-widest">
-              Data source: OpenStreetMap • Recommendations: Google Gemini
-            </p>
+      {/* ═══════════════════════════════════════════════════════════════ */}
+      {/* TRIP PLAN SCREEN                                               */}
+      {/* ═══════════════════════════════════════════════════════════════ */}
+      {screen === 'plan' && tripPlan && candidates.length > 0 && (
+        <section className="min-h-screen pt-24 pb-20 px-6">
+          <div className="max-w-5xl mx-auto">
+            {(() => {
+              const candidate = candidates[selectedTrailIndex] || candidates[0];
+              const trail = findTrailForCandidate(candidate);
+              const validation = validations.find(v => v.trailId === candidate.trailId) || validations[0];
+
+              if (!trail || !validation) return null;
+
+              return (
+                <TripPlanView
+                  plan={tripPlan}
+                  trail={trail}
+                  candidate={candidate}
+                  validation={validation}
+                  trailIndex={selectedTrailIndex}
+                  onBack={() => {
+                    setScreen('results');
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                  }}
+                />
+              );
+            })()}
           </div>
-        </div>
-      </footer>
+        </section>
+      )}
     </div>
   );
 }
-
-const ProblemSection = () => {
-  return (
-    <section className="py-32 bg-navy text-offwhite border-t border-white/5">
-      <div className="max-w-7xl mx-auto px-6">
-        <div className="grid md:grid-cols-3 gap-8">
-          {[
-            {
-              title: "AI Powered Intent",
-              desc: "Don't just search for \"hikes\". Describe how you want to feel—secluded, challenged, or inspired.",
-              icon: <Wind className="w-6 h-6 text-orange" />
-            },
-            {
-              title: "Precision Vitals",
-              desc: "Live elevation tracking and real-time oxygen density data for high-alpine expeditions.",
-              icon: <Mountain className="w-6 h-6 text-teal" />
-            },
-            {
-              title: "The Community Lab",
-              desc: "Access trail data shared by the TrailScout collective, verified by digital sherpas.",
-              icon: <Compass className="w-6 h-6 text-offwhite" />
-            }
-          ].map((item, i) => (
-            <div key={i} className="bg-white/5 border border-white/10 p-10 rounded-3xl hover:bg-white/[0.07] transition-colors group">
-              <div className="mb-8 bg-navy p-4 rounded-2xl inline-block border border-white/10 group-hover:border-teal/50 transition-colors">
-                {item.icon}
-              </div>
-              <h3 className="text-2xl font-bold mb-4">{item.title}</h3>
-              <p className="text-offwhite/50 leading-relaxed">{item.desc}</p>
-            </div>
-          ))}
-        </div>
-      </div>
-    </section>
-  );
-};
-
-const WaitlistForm = () => {
-  const [email, setEmail] = useState('');
-  const [submitted, setSubmitted] = useState(false);
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (email) {
-      setSubmitted(true);
-      setEmail('');
-    }
-  };
-
-  return (
-    <section id="waitlist" className="py-32 bg-navy">
-      <div className="max-w-4xl mx-auto px-6 text-center">
-        <h2 className="font-display text-5xl md:text-7xl font-bold text-offwhite mb-8">Join the collective.</h2>
-        <p className="text-offwhite/50 text-xl mb-12 max-w-xl mx-auto">
-          Get early access to the Digital Sherpa beta and start planning your next expedition.
-        </p>
-
-        {submitted ? (
-          <motion.div 
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="bg-teal text-navy p-8 rounded-3xl inline-flex items-center gap-3"
-          >
-            <CheckCircle2 className="w-6 h-6" />
-            <span className="font-bold text-lg">You're on the list. Welcome to TrailScout.</span>
-          </motion.div>
-        ) : (
-          <form onSubmit={handleSubmit} className="flex flex-col sm:flex-row gap-4 max-w-lg mx-auto">
-            <input 
-              type="email" 
-              placeholder="Your email address" 
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="flex-1 px-8 py-5 rounded-full border border-white/10 focus:outline-none focus:ring-2 focus:ring-teal bg-white/5 text-offwhite text-lg"
-            />
-            <button 
-              type="submit" 
-              className="bg-orange text-offwhite px-10 py-5 rounded-full font-bold text-lg hover:bg-peach hover:text-navy transition-all shadow-xl"
-            >
-              Join Waitlist
-            </button>
-          </form>
-        )}
-      </div>
-    </section>
-  );
-};
