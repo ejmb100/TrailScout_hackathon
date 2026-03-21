@@ -1,3 +1,4 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Outfit:wght@500;600;700&display=swap');
 @import "tailwindcss";
 
 @theme {
@@ -24,5 +25,3 @@
     @apply bg-offwhite text-forest font-sans;
   }
 }
-
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Outfit:wght@500;600;700&display=swap');
