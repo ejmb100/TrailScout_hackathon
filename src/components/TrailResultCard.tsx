@@ -13,6 +13,7 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import type { TrailCandidate, ValidationResult } from '../services/geminiService';
+import type { PlannerScoredCandidate } from '../planner';
 import type { TrailData } from '../services/osmService';
 import { calculateDistance } from '../utils/trailScoring';
 
@@ -28,6 +29,8 @@ interface TrailResultCardProps {
   trail: TrailData;
   candidate: TrailCandidate;
   validation?: ValidationResult;
+  /** Deterministic planner assessment (gates, risk). */
+  planner?: PlannerScoredCandidate;
   rank: number;
   isSelected: boolean;
   /** User's desired hike length from intent (km). */
@@ -53,6 +56,7 @@ const TrailResultCard: React.FC<TrailResultCardProps> = ({
   trail,
   candidate,
   validation,
+  planner,
   rank,
   isSelected,
   targetMaxKm,
@@ -62,9 +66,13 @@ const TrailResultCard: React.FC<TrailResultCardProps> = ({
   const distMi = (distKm * 0.621371).toFixed(1);
   const imageUrl = trailImages[rank % trailImages.length];
   const fit = validation ? fitColors[validation.overallFit] || fitColors.good : fitColors.good;
+  const gatedOut = planner && !planner.eligible;
+  const matchMuted = Boolean(gatedOut);
   const sacShort = trail.tags.sac_scale
     ? trail.tags.sac_scale.replace(/_/g, ' ').slice(0, 14)
     : null;
+  const isUsfs = (trail.tags.trailscout_source ?? '').includes('usfs_nfs');
+  const wildernessName = trail.tags.wilderness_name;
 
   return (
     <motion.div
@@ -113,11 +121,20 @@ const TrailResultCard: React.FC<TrailResultCardProps> = ({
                 {fit.label}
               </div>
             )}
-            <div className="ml-auto flex items-center gap-0.5 rounded bg-black/55 px-2 py-0.5 text-offwhite">
-              <Star className="w-3 h-3 text-amber shrink-0" />
+            <div
+              className={`ml-auto flex items-center gap-0.5 rounded px-2 py-0.5 ${
+                matchMuted ? 'bg-black/35 text-offwhite/45' : 'bg-black/55 text-offwhite'
+              }`}
+            >
+              <Star className={`w-3 h-3 shrink-0 ${matchMuted ? 'text-offwhite/35' : 'text-amber'}`} />
               <span className="text-[10px] font-bold tabular-nums">{candidate.matchScore}%</span>
             </div>
           </div>
+          {gatedOut && (
+            <div className="absolute top-1.5 left-1.5 right-1.5 rounded bg-red/90 text-[8px] font-bold text-white uppercase tracking-wide text-center py-0.5 px-1">
+              Did not pass gates
+            </div>
+          )}
         </div>
 
         {/* Card body — stats + copy */}
@@ -140,7 +157,11 @@ const TrailResultCard: React.FC<TrailResultCardProps> = ({
           <div className="grid grid-cols-2 gap-1 text-[8px] sm:text-[9px]">
             <div className="rounded bg-black/25 border border-white/8 px-1.5 py-1 text-center">
               <div className="text-offwhite/35 uppercase tracking-wider font-bold">Match</div>
-              <div className="font-display font-bold text-amber tabular-nums">{candidate.matchScore}%</div>
+              <div
+                className={`font-display font-bold tabular-nums ${matchMuted ? 'text-offwhite/40' : 'text-amber'}`}
+              >
+                {candidate.matchScore}%
+              </div>
             </div>
             <div className="rounded bg-black/25 border border-white/8 px-1.5 py-1 text-center">
               <div className="text-offwhite/35 uppercase tracking-wider font-bold">Length</div>
@@ -196,6 +217,18 @@ const TrailResultCard: React.FC<TrailResultCardProps> = ({
               <span className="inline-flex items-center gap-0.5 bg-orange/15 px-1.5 py-0.5 rounded text-[8px] text-orange">
                 <Mountain className="w-2.5 h-2.5 shrink-0" />
                 {sacShort}
+              </span>
+            )}
+            {isUsfs && (
+              <span className="inline-flex items-center gap-0.5 bg-amber/15 px-1.5 py-0.5 rounded text-[8px] text-amber font-medium">
+                <ShieldCheck className="w-2.5 h-2.5 shrink-0" />
+                USFS
+              </span>
+            )}
+            {wildernessName && (
+              <span className="inline-flex items-center gap-0.5 bg-green/15 px-1.5 py-0.5 rounded text-[8px] text-green font-medium max-w-full truncate">
+                <Mountain className="w-2.5 h-2.5 shrink-0" />
+                {wildernessName}
               </span>
             )}
           </div>

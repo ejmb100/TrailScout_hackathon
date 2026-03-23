@@ -15,6 +15,7 @@ export function scoreAndFilterTrails(trails: TrailData[], prefs: RecommendationP
 
   const targetDifficultyTags = prefs.difficulty ? difficultyMap[prefs.difficulty] : [];
   const targetKm = prefs.maxDistance || 5;
+  const isMultiDay = prefs.tripType === 'multi_day';
 
   const scored = trails
     .map((trail) => {
@@ -30,7 +31,7 @@ export function scoreAndFilterTrails(trails: TrailData[], prefs: RecommendationP
       } else if (prefs.difficulty === 'beginner' && (!tags.sac_scale || tags.sac_scale === 'hiking')) {
         score += 15;
       } else if (prefs.difficulty !== 'beginner' && !tags.sac_scale) {
-        score -= 5;
+        score -= isMultiDay ? 2 : 5;
       }
 
       if (prefs.terrain && prefs.terrain.length > 0 && tags.surface) {
@@ -50,26 +51,45 @@ export function scoreAndFilterTrails(trails: TrailData[], prefs: RecommendationP
       const dist = calculateDistance(trail.path);
       const ratio = targetKm > 0 ? dist / targetKm : 0;
 
-      if (ratio < 0.05) {
-        score -= 50;
-      } else if (ratio < 0.15) {
-        score -= 28;
-      } else if (ratio < 0.25) {
-        score -= 14;
-      }
+      if (isMultiDay) {
+        // For multi-day, distance match is the dominant signal
+        if (ratio >= 0.6 && ratio <= 1.4) {
+          score += 60;
+        } else if (ratio >= 0.4 && ratio <= 2.0) {
+          score += 35;
+        } else if (ratio >= 0.3) {
+          score += 10;
+        }
 
-      if (ratio >= 0.7 && ratio <= 1.2) {
-        score += 38;
-      } else if (ratio >= 0.5) {
-        score += 28;
-      } else if (ratio >= 0.25) {
-        score += 14;
-      } else if (ratio >= 0.2) {
-        score += 6;
-      }
+        if (ratio < 0.3) {
+          score -= 40;
+        }
 
-      if (ratio > 1.5) {
-        score -= 12;
+        if ((tags.trailscout_source ?? '').includes('usfs_nfs')) {
+          score += 8;
+        }
+      } else {
+        if (ratio < 0.05) {
+          score -= 50;
+        } else if (ratio < 0.15) {
+          score -= 28;
+        } else if (ratio < 0.25) {
+          score -= 14;
+        }
+
+        if (ratio >= 0.7 && ratio <= 1.2) {
+          score += 38;
+        } else if (ratio >= 0.5) {
+          score += 28;
+        } else if (ratio >= 0.25) {
+          score += 14;
+        } else if (ratio >= 0.2) {
+          score += 6;
+        }
+
+        if (ratio > 1.5) {
+          score -= 12;
+        }
       }
 
       return { trail, score, dist };
@@ -77,12 +97,16 @@ export function scoreAndFilterTrails(trails: TrailData[], prefs: RecommendationP
     .filter((item) => item.trail.path.length >= 2)
     .sort((a, b) => b.score - a.score);
 
-  const minFloorStrong = Math.max(1.0, 0.25 * targetKm);
+  const minFloorStrong = isMultiDay
+    ? Math.max(12, 0.35 * targetKm)
+    : Math.max(1.0, 0.25 * targetKm);
   let filtered = scored.filter((s) => s.dist >= minFloorStrong);
 
   if (filtered.length === 0) {
     console.warn('[trailScoring] No trails above length floor; relaxing min distance filter');
-    const minFloorRelaxed = Math.max(0.4, 0.08 * targetKm);
+    const minFloorRelaxed = isMultiDay
+      ? Math.max(8, 0.2 * targetKm)
+      : Math.max(0.4, 0.08 * targetKm);
     filtered = scored.filter((s) => s.dist >= minFloorRelaxed);
   }
 
@@ -90,6 +114,8 @@ export function scoreAndFilterTrails(trails: TrailData[], prefs: RecommendationP
     console.warn('[trailScoring] Still empty; returning best-effort score order');
     filtered = scored;
   }
+
+  console.info(`[trailScoring] targetKm=${targetKm.toFixed(1)}, multiDay=${isMultiDay}, minFloor=${minFloorStrong.toFixed(1)}, passed=${filtered.length}/${scored.length}, top="${filtered[0]?.trail.name}" (${filtered[0]?.dist.toFixed(1)} km, score=${filtered[0]?.score})`);
 
   return filtered.map((s) => s.trail);
 }

@@ -2,7 +2,8 @@
  * Trail elevation: USGS 3DEP (National Map ImageServer getSamples) inside the US,
  * Open-Elevation elsewhere or when 3DEP fails.
  *
- * Dev: Vite proxies /api/3dep and /api/elevation for CORS.
+ * Both services currently send permissive CORS headers, so we call them directly
+ * from the browser instead of routing through the Vite dev proxy.
  */
 
 import type { TrailData, TrailPoint } from './osmService';
@@ -13,16 +14,10 @@ const DEP_3_SAMPLES_PATH =
   '/arcgis/rest/services/3DEPElevation/ImageServer/getSamples';
 
 function openElevationLookupUrl(): string {
-  if (import.meta.env.DEV) {
-    return '/api/elevation/lookup';
-  }
   return 'https://api.open-elevation.com/api/v1/lookup';
 }
 
 function threeDepGetSamplesUrl(): string {
-  if (import.meta.env.DEV) {
-    return '/api/3dep/getSamples';
-  }
   return `https://elevation.nationalmap.gov${DEP_3_SAMPLES_PATH}`;
 }
 

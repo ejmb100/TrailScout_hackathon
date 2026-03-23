@@ -30,6 +30,39 @@ const DEFAULT_CENTER = { lat: 46.5197, lng: 6.6323 };
 /** Default basemap when the map first loads (controls use same union type). */
 const INITIAL_MAP_TYPE = 'terrain' as 'dark' | 'terrain' | 'satellite';
 
+/**
+ * Max gap (km) between consecutive path points before we treat them as
+ * disconnected. Anything larger produces a phantom straight line on the map.
+ */
+const MAX_RENDER_GAP_KM = 0.8;
+const DEG_TO_RAD = Math.PI / 180;
+
+function fastDistKm(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
+  const dLat = (b.lat - a.lat) * DEG_TO_RAD;
+  const dLng = (b.lng - a.lng) * DEG_TO_RAD;
+  const sinLat = Math.sin(dLat / 2);
+  const sinLng = Math.sin(dLng / 2);
+  const h = sinLat * sinLat + Math.cos(a.lat * DEG_TO_RAD) * Math.cos(b.lat * DEG_TO_RAD) * sinLng * sinLng;
+  return 6371 * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+}
+
+/** Split a path into contiguous sub-paths, breaking at gaps larger than MAX_RENDER_GAP_KM. */
+function splitAtGaps(path: { lat: number; lng: number }[]): { lat: number; lng: number }[][] {
+  if (path.length < 2) return [path];
+  const subPaths: { lat: number; lng: number }[][] = [];
+  let current = [path[0]];
+  for (let i = 1; i < path.length; i++) {
+    if (fastDistKm(path[i - 1], path[i]) > MAX_RENDER_GAP_KM) {
+      if (current.length >= 2) subPaths.push(current);
+      current = [path[i]];
+    } else {
+      current.push(path[i]);
+    }
+  }
+  if (current.length >= 2) subPaths.push(current);
+  return subPaths;
+}
+
 interface MapContainerProps {
   trails: TrailData[];
   center?: { lat: number; lng: number };
@@ -52,6 +85,7 @@ const MapContainer: React.FC<MapContainerProps> = ({
   
   const [mapType, setMapType] = useState<'dark' | 'terrain' | 'satellite'>(INITIAL_MAP_TYPE);
   const [is3D, setIs3D] = useState(false);
+  const [showTrails, setShowTrails] = useState(true);
 
     useEffect(() => {
       const initGoogleMapInner = () => {
@@ -164,6 +198,12 @@ const MapContainer: React.FC<MapContainerProps> = ({
     }, [trails, focusedTrailId]);
 
     useEffect(() => {
+      const map = showTrails ? googleMap.current : null;
+      polylines.current.forEach(p => { try { p.setMap(map); } catch {} });
+      markers.current.forEach(m => { try { m.setMap(map); } catch {} });
+    }, [showTrails]);
+
+    useEffect(() => {
       if (googleMap.current && focusedTrailId) {
         const trail = trails.find(t => t.id === focusedTrailId);
         if (trail) {
@@ -202,16 +242,18 @@ const MapContainer: React.FC<MapContainerProps> = ({
     trails.forEach(trail => {
       try {
         const isHighlight = trail.tags.color === '#FF7D0F';
-        const polyline = new google.maps.Polyline({
-          path: trail.path,
-          geodesic: true,
-          strokeColor: trail.tags.color || '#FF4500',
-          strokeOpacity: isHighlight ? 1.0 : 0.8,
-          strokeWeight: isHighlight ? 8 : 4,
-          map: googleMap.current
-        });
-
-        polylines.current.push(polyline);
+        const subPaths = splitAtGaps(trail.path);
+        for (const subPath of subPaths) {
+          const polyline = new google.maps.Polyline({
+            path: subPath,
+            geodesic: true,
+            strokeColor: trail.tags.color || '#FF4500',
+            strokeOpacity: isHighlight ? 1.0 : 0.8,
+            strokeWeight: isHighlight ? 5 : 3,
+            map: googleMap.current
+          });
+          polylines.current.push(polyline);
+        }
 
         if (trail.path && trail.path.length > 0) {
           // Adjust bounds for the map to frame everything
@@ -230,7 +272,7 @@ const MapContainer: React.FC<MapContainerProps> = ({
               title: trail.name,
               icon: {
                 path: google.maps.SymbolPath.CIRCLE,
-                scale: isHighlight ? 7 : 5,
+                scale: isHighlight ? 6 : 5,
                 fillColor: trail.tags.color || '#03B2BA',
                 fillOpacity: 1,
                 strokeWeight: 2,
@@ -312,6 +354,13 @@ const MapContainer: React.FC<MapContainerProps> = ({
           className={`px-4 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-widest transition-colors ${is3D ? 'bg-orange text-navy shadow-[0_0_15px_rgba(255,125,15,0.5)]' : 'text-offwhite/70 hover:text-offwhite'}`}
         >
           3D Angle
+        </button>
+        <div className="w-px h-4 bg-white/20 mx-1 self-center" />
+        <button
+          onClick={() => setShowTrails(!showTrails)}
+          className={`px-4 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-widest transition-colors ${showTrails ? 'bg-teal text-navy' : 'text-offwhite/70 hover:text-offwhite'}`}
+        >
+          Trail
         </button>
       </div>
 

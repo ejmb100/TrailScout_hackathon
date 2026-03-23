@@ -22,10 +22,15 @@ import {
   TrendingUp,
   TrendingDown,
   Tent,
+  Plane,
+  Car,
 } from 'lucide-react';
 import type { IntentProfile, TripPlan, TrailCandidate, ValidationResult } from '../services/geminiService';
+import type { PlannerRecommendation, MultiDayItinerary } from '../planner';
+import type { TravelPlan } from '../services/travelLogisticsService';
 import type { TrailData } from '../services/osmService';
 import { calculateDistance } from '../utils/trailScoring';
+import { getDataVintage } from '../services/officialTrailService';
 import MapContainer from './MapContainer';
 
 // Same curated images as ResultCard
@@ -46,6 +51,9 @@ interface TripPlanViewProps {
   intentProfile?: IntentProfile;
   /** User's desired hike length from intent (km), for comparison to mapped geometry. */
   targetHikeKm?: number;
+  plannerRecommendation?: PlannerRecommendation;
+  multiDayItinerary?: MultiDayItinerary;
+  travelPlan?: TravelPlan;
   onBack: () => void;
 }
 
@@ -57,6 +65,9 @@ const TripPlanView: React.FC<TripPlanViewProps> = ({
   trailIndex,
   intentProfile,
   targetHikeKm,
+  plannerRecommendation,
+  multiDayItinerary,
+  travelPlan,
   onBack,
 }) => {
   const [calendarAdded, setCalendarAdded] = useState(false);
@@ -71,11 +82,30 @@ const TripPlanView: React.FC<TripPlanViewProps> = ({
   const logisticsNotes = Array.isArray(plan.logisticsNotes) ? plan.logisticsNotes : [];
   const isMultiDay = plan.tripType === 'multi_day' || intentProfile?.tripType === 'multi_day';
   const tripLengthDays = Math.max(plan.tripLengthDays || intentProfile?.tripLengthDays || 1, 1);
+
+  const nearestAirport = travelPlan?.nearestAirports[0];
+  const trailheadArrivalLabel = nearestAirport
+    ? `Nearest airport: ${nearestAirport.airport.code} (${nearestAirport.airport.city}), ~${nearestAirport.distToTrailheadKm} km from the trailhead.`
+    : 'Arrive at trailhead — check travel logistics below for airport and transport info.';
   const bringItems = checklistItems.length > 0
     ? checklistItems.slice(0, 6)
     : Array.isArray(plan.whatToBring)
       ? plan.whatToBring
       : [];
+
+  const triggerDownload = (blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    window.setTimeout(() => {
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, 1000);
+  };
 
   // Generate .ics calendar event
   const handleAddCalendar = () => {
@@ -101,12 +131,7 @@ END:VEVENT
 END:VCALENDAR`;
 
     const blob = new Blob([icsContent], { type: 'text/calendar' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `trailscout_${trail.name?.replace(/\s+/g, '_') || 'hike'}.ics`;
-    a.click();
-    URL.revokeObjectURL(url);
+    triggerDownload(blob, `trailscout_${trail.name?.replace(/\s+/g, '_') || 'hike'}.ics`);
     setCalendarAdded(true);
   };
 
@@ -128,12 +153,12 @@ END:VCALENDAR`;
     let md = `# 🏔️ TrailScout Trip Plan\n\n`;
     md += `## ${plan.recommendedTrailName}\n\n`;
     md += `> ${plan.whyChosen}\n\n`;
-    md += `### Schedule\n`;
-    md += `- **Depart:** ${plan.departureTime}\n`;
-    md += `- **Return:** ${plan.expectedReturnTime}\n`;
+    md += `### Trip Info\n`;
     md += `- **Duration:** ${plan.estimatedDuration}\n`;
-    md += `- **Drive:** ${plan.driveTime}\n`;
     md += `- **Trip type:** ${isMultiDay ? `${tripLengthDays} day backpacking trip` : 'Day hike'}\n`;
+    if (nearestAirport) {
+      md += `- **Nearest airport:** ${nearestAirport.airport.code} (${nearestAirport.airport.city}), ~${nearestAirport.distToTrailheadKm} km from trailhead\n`;
+    }
     if (trail.elevationGainM != null && trail.elevationLossM != null) {
       md += `- **Elevation gain / loss:** ${trail.elevationGainM} m / ${trail.elevationLossM} m (DEM along trail)\n`;
     }
@@ -144,7 +169,14 @@ END:VCALENDAR`;
     md += `\n### Conditions\n`;
     md += `- **Weather:** ${plan.weatherSummary}\n`;
     md += `- **Trail:** ${plan.conditionsSummary}\n\n`;
-    if (dailyPlan.length > 0) {
+    if (multiDayItinerary && multiDayItinerary.days.length > 1) {
+      md += `### Itinerary (${multiDayItinerary.totalKm} km total, ${multiDayItinerary.campsitesFound} campsites)\n`;
+      for (const seg of multiDayItinerary.days) {
+        const camp = seg.campsite && seg.day < multiDayItinerary.days.length ? ` → Camp: ${seg.campsite.name}` : '';
+        md += `- **Day ${seg.day}:** ${seg.distanceKm} km (km ${seg.startKm}–${seg.endKm}) — ${seg.notes}${camp}\n`;
+      }
+      md += `\n`;
+    } else if (dailyPlan.length > 0) {
       md += `### Daily Plan\n`;
       dailyPlan.forEach((item, i) => { md += `- Day ${i + 1}: ${item}\n`; });
       md += `\n`;
@@ -155,12 +187,32 @@ END:VCALENDAR`;
       logisticsNotes.forEach(note => { md += `- ${note}\n`; });
       md += `\n`;
     }
+    if (travelPlan) {
+      md += `### Getting There\n`;
+      travelPlan.notes.forEach(note => { md += `- ${note}\n`; });
+      md += `\n**Nearest Airports:**\n`;
+      travelPlan.nearestAirports.forEach(({ airport, distToTrailheadKm }) => {
+        md += `- ${airport.code} — ${airport.name} (${distToTrailheadKm} km)${airport.hub ? ' ✈ Hub' : ''}\n`;
+      });
+      if (travelPlan.groundTransport.length > 0) {
+        md += `\n**Ground Transport:**\n`;
+        travelPlan.groundTransport.forEach(t => {
+          md += `- **${t.mode}**${t.estimatedTime ? ` (${t.estimatedTime})` : ''}: ${t.description}\n`;
+        });
+      }
+      md += `\n`;
+    }
     md += `### What to Bring\n`;
     bringItems.forEach(item => { md += `- ${item}\n`; });
     md += `\n### Safety Notes\n`;
-    plan.safetyNotes.forEach(note => { md += `- ⚠️ ${note}\n`; });
+    const safetyLines = Array.isArray(plan.safetyNotes) ? plan.safetyNotes : [String(plan.safetyNotes)];
+    safetyLines.forEach((note) => {
+      md += `- ⚠️ ${note}\n`;
+    });
     md += `\n### Packing Checklist\n`;
-    plan.packingChecklist.forEach(item => { md += `- [ ] ${item}\n`; });
+    checklistItems.forEach((item) => {
+      md += `- [ ] ${item}\n`;
+    });
     if (plan.backupTrailName !== 'None') {
       md += `\n### Backup Option\n`;
       md += `**${plan.backupTrailName}** — ${plan.backupReason}\n`;
@@ -168,12 +220,7 @@ END:VCALENDAR`;
     md += `\n---\n*Generated by TrailScout Multi-Agent Planning Engine*\n`;
 
     const blob = new Blob([md], { type: 'text/markdown' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `trailscout_plan_${trail.name?.replace(/\s+/g, '_') || 'trip'}.md`;
-    a.click();
-    URL.revokeObjectURL(url);
+    triggerDownload(blob, `trailscout_plan_${trail.name?.replace(/\s+/g, '_') || 'trip'}.md`);
   };
 
   return (
@@ -193,32 +240,116 @@ END:VCALENDAR`;
         Back to results
       </motion.button>
 
-      {/* Hero banner */}
-      <div className="relative rounded-3xl overflow-hidden mb-8">
-        <div className="h-64 md:h-80">
+      {plannerRecommendation?.status === 'none' && (
+        <div className="mb-6 rounded-2xl border border-red/30 bg-red/10 px-4 py-3">
+          <div className="text-[10px] font-bold text-red uppercase tracking-wider mb-1">No auto-selected trail</div>
+          <p className="text-sm text-offwhite/80">
+            This page shows context from your search. Follow safety notes below — do not treat match scores as approval.
+          </p>
+        </div>
+      )}
+
+      {plannerRecommendation?.status === 'conditional' && (
+        <div className="mb-6 rounded-2xl border border-amber/35 bg-amber/10 px-4 py-3">
+          <div className="text-[10px] font-bold text-amber uppercase tracking-wider mb-1">Higher-risk itinerary</div>
+          <p className="text-sm text-offwhite/80">
+            Deterministic checks flagged elevated hazard or uncertainty. Confirm conditions with a local source before committing.
+          </p>
+        </div>
+      )}
+
+      {/* Hero and map row */}
+      <div className="grid lg:grid-cols-3 gap-6 mb-8">
+        <div className="relative rounded-3xl overflow-hidden min-h-[20rem] lg:min-h-[28rem] lg:col-span-1">
           <img
             src={imageUrl}
             alt={trail.name}
-            className="w-full h-full object-cover"
+            className="absolute inset-0 w-full h-full object-cover"
             referrerPolicy="no-referrer"
           />
-          <div className="absolute inset-0 bg-gradient-to-t from-navy via-navy/60 to-transparent" />
-        </div>
-        <div className="absolute bottom-0 left-0 right-0 p-6 md:p-8">
-          <div className="flex items-center gap-2 mb-3">
-            <div className="gradient-teal px-3 py-1 rounded-full text-[10px] font-bold text-navy uppercase tracking-wider">
-              #1 Recommended
+          <div className="absolute inset-0 bg-gradient-to-t from-navy via-navy/75 to-navy/10" />
+          <div className="relative h-full flex flex-col justify-end p-6 md:p-8">
+            <div className="flex items-center gap-2 mb-3 flex-wrap">
+              <div
+                className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                  plan.recommendedTrailId === 0
+                    ? 'bg-red/25 text-red border border-red/30'
+                    : plannerRecommendation?.status === 'conditional'
+                      ? 'bg-amber/25 text-amber border border-amber/35'
+                      : 'gradient-teal text-navy'
+                }`}
+              >
+                {plan.recommendedTrailId === 0
+                  ? 'No primary pick'
+                  : plannerRecommendation?.status === 'conditional'
+                    ? 'Conditional pick'
+                    : '#1 Recommended'}
+              </div>
+              <div
+                className={`backdrop-blur px-3 py-1 rounded-full text-[10px] font-bold flex items-center gap-1 ${
+                  plan.recommendedTrailId === 0 ? 'bg-white/5 text-offwhite/45' : 'bg-white/10 text-offwhite'
+                }`}
+              >
+                <Star className={`w-3 h-3 ${plan.recommendedTrailId === 0 ? 'text-offwhite/35' : 'text-amber'}`} />{' '}
+                {candidate.matchScore}% Match
+              </div>
             </div>
-            <div className="bg-white/10 backdrop-blur px-3 py-1 rounded-full text-[10px] font-bold text-offwhite flex items-center gap-1">
-              <Star className="w-3 h-3 text-amber" /> {candidate.matchScore}% Match
-            </div>
+            <h1 className="font-display text-3xl md:text-4xl font-bold text-offwhite mb-2">
+              {trail.name || 'Unnamed Trail'}
+            </h1>
+            <p className="text-offwhite/70 text-sm">{plan.whyChosen}</p>
           </div>
-          <h1 className="font-display text-3xl md:text-4xl font-bold text-offwhite mb-2">
-            {trail.name || 'Unnamed Trail'}
-          </h1>
-          <p className="text-offwhite/70 text-sm max-w-2xl">{plan.whyChosen}</p>
+        </div>
+
+        <div className="glass-bright rounded-3xl p-4 lg:col-span-2">
+          <div className="h-full min-h-[20rem] lg:min-h-[28rem] rounded-[1.25rem] overflow-hidden border border-white/10">
+            <MapContainer
+              trails={[{ ...trail, tags: { ...trail.tags, color: '#FF7D0F' } }]}
+              focusedTrailId={trail.id}
+            />
+          </div>
+          <p className="text-[11px] text-offwhite/40 mt-3 px-1">
+            Map is focused on the selected trail only.
+          </p>
         </div>
       </div>
+
+      {(() => {
+        const isUsfs = (trail.tags.trailscout_source ?? '').includes('usfs_nfs');
+        const wilderness = trail.tags.wilderness_name;
+        if (!isUsfs && !wilderness) return null;
+        const vintage = isUsfs ? getDataVintage() : null;
+        return (
+          <div className="mb-6 space-y-2">
+            {isUsfs && vintage && (
+              <div className="flex items-start gap-3 glass-bright border border-amber/25 rounded-2xl px-4 py-3 text-left">
+                <Shield className="w-5 h-5 text-amber shrink-0 mt-0.5" />
+                <div>
+                  <div className="text-[10px] font-bold text-amber uppercase tracking-wider mb-0.5">
+                    USDA Forest Service — {vintage.forestName}
+                  </div>
+                  <p className="text-[11px] text-offwhite/60 leading-snug">
+                    {vintage.attribution} Data refreshed {vintage.fetchedAt.slice(0, 10)}.
+                  </p>
+                </div>
+              </div>
+            )}
+            {wilderness && (
+              <div className="flex items-start gap-3 glass-bright border border-green/25 rounded-2xl px-4 py-3 text-left">
+                <Shield className="w-5 h-5 text-green shrink-0 mt-0.5" />
+                <div>
+                  <div className="text-[10px] font-bold text-green uppercase tracking-wider mb-0.5">
+                    {wilderness}
+                  </div>
+                  <p className="text-[11px] text-offwhite/60 leading-snug">
+                    No mechanized travel, no bicycles. Group size limits may apply. Check USFS for current permit requirements and closures before departing.
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Quick stats row */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-8">
@@ -237,11 +368,18 @@ END:VCALENDAR`;
             color: 'text-amber',
           },
           { icon: Clock, label: 'Duration', value: plan.estimatedDuration, color: 'text-blue' },
-          { icon: MapPin, label: 'Drive Time', value: plan.driveTime, color: 'text-purple' },
+          {
+            icon: Plane,
+            label: 'Nearest Airport',
+            value: travelPlan?.nearestAirports[0]
+              ? `${travelPlan.nearestAirports[0].airport.code} (${travelPlan.nearestAirports[0].distToTrailheadKm} km)`
+              : '—',
+            color: 'text-purple',
+          },
           {
             icon: isMultiDay ? Tent : Sun,
-            label: isMultiDay ? 'Trip Length' : 'Depart',
-            value: isMultiDay ? `${tripLengthDays} day${tripLengthDays === 1 ? '' : 's'}` : plan.departureTime,
+            label: isMultiDay ? 'Trip Length' : 'Type',
+            value: isMultiDay ? `${tripLengthDays} day${tripLengthDays === 1 ? '' : 's'}` : 'Day hike',
             color: 'text-orange',
           },
         ].map(({ icon: Icon, label, value, color }) => (
@@ -262,12 +400,75 @@ END:VCALENDAR`;
               <Clock className="w-5 h-5 text-teal" /> {isMultiDay ? 'Trip Timeline' : 'Trip Schedule'}
             </h3>
             <div className="space-y-3">
-              {isMultiDay ? (
+              {isMultiDay && multiDayItinerary && multiDayItinerary.days.length > 1 ? (
                 <>
                   <TimelineItem
                     time="Start"
-                    label={`Leave home at ${plan.departureTime} and reach the trailhead after about ${plan.driveTime}.`}
-                    icon="🚗"
+                    label={trailheadArrivalLabel}
+                    icon="📍"
+                  />
+                  {multiDayItinerary.days.map((seg) => {
+                    const isLast = seg.day === multiDayItinerary.days.length;
+                    const icon = isLast ? '🏁' : !seg.approvedSite ? '⚠️' : seg.day === 1 ? '🥾' : '⛺';
+                    return (
+                      <React.Fragment key={seg.day}>
+                        <TimelineItem
+                          time={`Day ${seg.day}`}
+                          label={
+                            <span>
+                              <span className="text-teal font-semibold tabular-nums">{seg.distanceKm} km</span>
+                              {' '}
+                              <span className="text-offwhite/50">(km {seg.startKm}–{seg.endKm})</span>
+                              {seg.wilderness && (
+                                <span className="ml-2 text-[9px] font-bold uppercase tracking-wider text-amber/70 bg-amber/10 px-1.5 py-0.5 rounded">Wilderness</span>
+                              )}
+                              <span className="block mt-1 text-[12px] text-offwhite/70 leading-relaxed">{seg.notes}</span>
+                              {seg.campsite && !isLast && (
+                                <span className="block mt-1 text-[11px] text-offwhite/45 flex items-center gap-1">
+                                  <Tent className="w-3 h-3 inline" />
+                                  {seg.campsite.name}
+                                  {seg.campsite.water === true && <span className="text-blue/60 ml-1">· water</span>}
+                                  {seg.campsite.water === false && <span className="text-red/50 ml-1">· no water</span>}
+                                  {seg.campsite.fee && <span className="text-amber/60 ml-1">· fee</span>}
+                                  {seg.approvedSite && <span className="text-green/50 ml-1">· USFS approved</span>}
+                                </span>
+                              )}
+                              {!seg.approvedSite && !isLast && (
+                                <span className="block mt-1 text-[11px] text-red/60 font-semibold flex items-center gap-1">
+                                  <AlertTriangle className="w-3 h-3 inline" /> No approved campsite — verify regulations before camping here
+                                </span>
+                              )}
+                            </span>
+                          }
+                          icon={icon}
+                        />
+                      </React.Fragment>
+                    );
+                  })}
+                  <TimelineItem time="Finish" label={`Plan to be off trail by ${plan.expectedReturnTime}.`} icon="✅" />
+
+                  {multiDayItinerary.warnings.length > 0 && (
+                    <div className="mt-3 p-3 rounded-lg bg-amber/5 border border-amber/15">
+                      <div className="text-[10px] font-bold text-amber uppercase tracking-wider mb-1">Warnings</div>
+                      <ul className="text-xs text-offwhite/60 space-y-1">
+                        {multiDayItinerary.warnings.map((w, i) => <li key={i}>{w}</li>)}
+                      </ul>
+                    </div>
+                  )}
+
+                  <div className="mt-3 p-3 rounded-lg bg-white/3 border border-white/8">
+                    <p className="text-[11px] text-offwhite/40 leading-relaxed">
+                      <Shield className="w-3 h-3 inline mr-1 text-offwhite/30" />
+                      {multiDayItinerary.disclaimer}
+                    </p>
+                  </div>
+                </>
+              ) : isMultiDay ? (
+                <>
+                  <TimelineItem
+                    time="Start"
+                    label={trailheadArrivalLabel}
+                    icon="📍"
                   />
                   {(dailyPlan.length > 0 ? dailyPlan : [plan.routeNotes]).map((item, i) => (
                     <React.Fragment key={`${item}-${i}`}>
@@ -282,14 +483,60 @@ END:VCALENDAR`;
                 </>
               ) : (
                 <>
-                  <TimelineItem time={plan.departureTime} label="Leave home" icon="🚗" />
-                  <TimelineItem time={`+${plan.driveTime}`} label="Arrive at trailhead" icon="🅿️" />
+                  <TimelineItem time="Start" label={trailheadArrivalLabel} icon="📍" />
                   <TimelineItem time="" label={plan.routeNotes} icon="🥾" isNote />
-                  <TimelineItem time={plan.expectedReturnTime} label="Back at car" icon="✅" />
+                  <TimelineItem time="Duration" label={plan.estimatedDuration} icon="⏱️" />
                 </>
               )}
             </div>
           </div>
+
+          {/* Campsite Itinerary Summary */}
+          {multiDayItinerary && multiDayItinerary.days.length > 1 && (
+            <div className="glass-bright rounded-2xl p-6">
+              <h3 className="font-display font-bold text-lg text-offwhite mb-4 flex items-center gap-2">
+                <Tent className="w-5 h-5 text-green" /> Itinerary Summary
+              </h3>
+              <div className="grid grid-cols-3 gap-3 mb-4">
+                <div className="bg-white/5 rounded-xl p-3 text-center">
+                  <div className="text-[10px] text-offwhite/40 uppercase tracking-wider mb-1">Total Distance</div>
+                  <div className="font-display font-bold text-teal text-lg tabular-nums">{multiDayItinerary.totalKm} km</div>
+                  <div className="text-[10px] text-offwhite/35">{(multiDayItinerary.totalKm * 0.621371).toFixed(1)} mi</div>
+                </div>
+                <div className="bg-white/5 rounded-xl p-3 text-center">
+                  <div className="text-[10px] text-offwhite/40 uppercase tracking-wider mb-1">Days</div>
+                  <div className="font-display font-bold text-offwhite text-lg tabular-nums">{multiDayItinerary.days.length}</div>
+                  <div className="text-[10px] text-offwhite/35">~{(multiDayItinerary.totalKm / multiDayItinerary.days.length).toFixed(0)} km/day</div>
+                </div>
+                <div className="bg-white/5 rounded-xl p-3 text-center">
+                  <div className="text-[10px] text-offwhite/40 uppercase tracking-wider mb-1">Approved Sites</div>
+                  <div className="font-display font-bold text-green text-lg tabular-nums">
+                    {multiDayItinerary.days.filter(d => d.approvedSite && d.day < multiDayItinerary.days.length).length}
+                  </div>
+                  <div className="text-[10px] text-offwhite/35">of {multiDayItinerary.days.length - 1} nights</div>
+                </div>
+              </div>
+              <div className="space-y-2">
+                {multiDayItinerary.days.map((seg) => (
+                  <div key={seg.day} className="flex items-center gap-3 text-xs">
+                    <span className="w-12 shrink-0 font-bold text-offwhite/50">Day {seg.day}</span>
+                    <div className="flex-1 h-2 bg-white/5 rounded-full overflow-hidden">
+                      <div
+                        className="h-full rounded-full bg-gradient-to-r from-teal/60 to-teal/30"
+                        style={{ width: `${Math.min(100, (seg.distanceKm / multiDayItinerary.totalKm) * 100 * multiDayItinerary.days.length)}%` }}
+                      />
+                    </div>
+                    <span className="w-16 text-right tabular-nums text-offwhite/60">{seg.distanceKm} km</span>
+                    {seg.day < multiDayItinerary.days.length && (
+                      seg.approvedSite
+                        ? <Tent className="w-3 h-3 text-green/50 shrink-0" />
+                        : <AlertTriangle className="w-3 h-3 text-red/50 shrink-0" />
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Conditions */}
           <div className="glass-bright rounded-2xl p-6">
@@ -323,22 +570,6 @@ END:VCALENDAR`;
                   · Your target ~{targetHikeKm.toFixed(1)} km{isMultiDay ? ` across ${tripLengthDays} days` : ''}. Real distance may differ if the trail continues off the mapped geometry.
                 </>
               )}
-            </p>
-          </div>
-
-          {/* Trail map */}
-          <div className="glass-bright rounded-2xl p-6">
-            <h3 className="font-display font-bold text-lg text-offwhite mb-4 flex items-center gap-2">
-              <MapPin className="w-5 h-5 text-teal" /> Trail Map
-            </h3>
-            <div className="h-72 rounded-2xl overflow-hidden border border-white/10">
-              <MapContainer
-                trails={[{ ...trail, tags: { ...trail.tags, color: '#FF7D0F' } }]}
-                focusedTrailId={trail.id}
-              />
-            </div>
-            <p className="text-[11px] text-offwhite/40 mt-3">
-              Map is focused on the selected trail only.
             </p>
           </div>
 
@@ -487,6 +718,63 @@ END:VCALENDAR`;
                   </div>
                 ))}
               </div>
+            </div>
+          )}
+
+          {/* Travel logistics */}
+          {travelPlan && (
+            <div className="glass-bright rounded-2xl p-6">
+              <h3 className="font-display font-bold text-lg text-offwhite mb-4 flex items-center gap-2">
+                <Plane className="w-5 h-5 text-purple" /> Getting There
+              </h3>
+
+              {/* Origin acknowledgment + notes */}
+              <div className="space-y-2 mb-4">
+                {travelPlan.notes.map((note, i) => (
+                  <div key={i} className="flex items-start gap-2 text-sm text-offwhite/80">
+                    <Navigation className="w-3 h-3 text-purple mt-0.5 flex-shrink-0" />
+                    <span>{note}</span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Nearest airports */}
+              <div className="mb-4">
+                <div className="text-[10px] text-offwhite/40 uppercase tracking-wider mb-2">Nearest Airports</div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {travelPlan.nearestAirports.map(({ airport, distToTrailheadKm }) => (
+                    <div key={airport.code} className="flex items-center gap-2 bg-white/5 rounded-lg px-3 py-2">
+                      <Plane className="w-4 h-4 text-teal flex-shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-medium text-offwhite truncate">
+                          {airport.code} — {airport.city}
+                          {airport.hub && <span className="ml-1 text-[10px] bg-purple/20 text-purple px-1.5 py-0.5 rounded-full">Hub</span>}
+                        </div>
+                        <div className="text-xs text-offwhite/50">{distToTrailheadKm} km to trail area</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Ground transport */}
+              {travelPlan.groundTransport.length > 0 && (
+                <div>
+                  <div className="text-[10px] text-offwhite/40 uppercase tracking-wider mb-2">Ground Transportation</div>
+                  <div className="space-y-2">
+                    {travelPlan.groundTransport.map((t, i) => (
+                      <div key={i} className="flex items-start gap-2 text-sm text-offwhite/70">
+                        <Car className="w-4 h-4 text-orange mt-0.5 flex-shrink-0" />
+                        <div>
+                          <span className="font-medium text-offwhite/90">{t.mode}</span>
+                          {t.estimatedTime && <span className="text-teal ml-1">({t.estimatedTime})</span>}
+                          <p className="text-xs text-offwhite/50 mt-0.5">{t.description}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

@@ -146,14 +146,14 @@ function inferTripLengthDays(raw: Record<string, unknown>, locationHint?: string
 }
 
 function inferTripType(raw: Record<string, unknown>, tripLengthDays: number, locationHint?: string): TripType {
-  if (raw.tripType === 'multi_day' || raw.tripType === 'day_hike') {
-    return raw.tripType;
-  }
+  if (tripLengthDays > 1) return 'multi_day';
 
   const text = String(locationHint || '').toLowerCase();
-  if (tripLengthDays > 1 || /\bovernight\b|\bbackpack(?:ing)?\b/.test(text)) {
+  if (/\bovernight\b|\bbackpack(?:ing)?\b|\bmulti[- ]?day\b/.test(text)) {
     return 'multi_day';
   }
+
+  if (raw.tripType === 'multi_day') return 'multi_day';
   return 'day_hike';
 }
 
@@ -171,14 +171,17 @@ function deriveSearchDistanceKm(
     };
   }
 
-  const requestedDailyDistance =
-    parseFiniteNumber(rawDailyDistanceKm) ?? (tripLengthDays > 0 ? totalDistanceKm / tripLengthDays : totalDistanceKm);
-  const dailyDistanceKm = clamp(requestedDailyDistance, 1, 40);
+  const MULTI_DAY_DAILY_FLOOR_KM = 12;
+  const rawDaily = parseFiniteNumber(rawDailyDistanceKm) ??
+    (tripLengthDays > 0 ? totalDistanceKm / tripLengthDays : totalDistanceKm);
+  const dailyDistanceKm = clamp(Math.max(rawDaily, MULTI_DAY_DAILY_FLOOR_KM), MULTI_DAY_DAILY_FLOOR_KM, 40);
+  const totalTarget = dailyDistanceKm * tripLengthDays;
+
   const requestedSearchDistance = parseFiniteNumber(rawSearchDistanceKm);
   const searchDistanceKm = clamp(
-    requestedSearchDistance ?? Math.max(6, Math.min(totalDistanceKm, Math.max(10, dailyDistanceKm * 1.5))),
-    6,
-    Math.max(6, totalDistanceKm)
+    requestedSearchDistance ?? totalTarget,
+    MULTI_DAY_DAILY_FLOOR_KM,
+    Math.max(totalTarget, totalDistanceKm)
   );
 
   return {
@@ -223,6 +226,14 @@ function fallbackRegionForLocation(locationHint: string | undefined): {
       location: String(locationHint || 'Asheville'),
       estimatedRegionName: 'Blue Ridge Mountains',
       bbox: { minLat: 35.3, maxLat: 35.95, minLon: -83.2, maxLon: -81.9 },
+    };
+  }
+
+  if (/san juan|weminuche|durango|silverton|pagosa|ouray|telluride/.test(text)) {
+    return {
+      location: String(locationHint || 'San Juan National Forest'),
+      estimatedRegionName: 'San Juan National Forest',
+      bbox: { minLat: 37.45, maxLat: 38.2, minLon: -108.2, maxLon: -107.0 },
     };
   }
 
@@ -523,7 +534,7 @@ export function fallbackValidationResults(
               ]
             : [],
       risks: ['Review current conditions before you go.'],
-      isRecommended: i < 3,
+      isRecommended: false,
     };
   });
 }
@@ -629,7 +640,8 @@ Return a JSON ARRAY:
   "isRecommended": boolean
 }
 
-Be honest and specific. Flag real risks. At least 1 trail should be recommended.
+Be honest and specific. Flag real risks.
+IMPORTANT: Set isRecommended true only when a trail clearly satisfies the user's hard constraints (distance, dog/kid needs, weather tolerance, return time). If none are a clear safe match, set isRecommended false for all — downstream deterministic rules will re-check and may still decline a primary pick. Your narrative and isRecommended are advisory; they do not override geometry or safety gates.
 Respond ONLY with valid JSON array.`;
 
   try {
@@ -683,10 +695,6 @@ Respond ONLY with valid JSON array.`;
       normalized.push(...fallbackValidationResults(missingCandidates, intent));
     }
 
-    if (!normalized.some((item) => item.isRecommended) && normalized.length > 0) {
-      normalized[0] = { ...normalized[0], isRecommended: true };
-    }
-
     return normalized;
   } catch (error) {
     console.error('[Validation Agent] Failed:', error);
@@ -700,12 +708,16 @@ export async function runActionAgent(
   intent: IntentProfile,
   topCandidate: TrailCandidate,
   validation: ValidationResult,
-  backupCandidate?: TrailCandidate
+  backupCandidate?: TrailCandidate,
+  plannerNote?: string
 ): Promise<TripPlan> {
   const prompt = `You are the ACTION AGENT in a multi-agent outdoor planning system.
 
-Your job: Generate a comprehensive, ACTION-ORIENTED trip plan for the recommended trail.
-Even if the trail is not a perfect match (e.g. "poor fit"), you MUST still provide a realistic, usable plan based on the data available. DO NOT return "N/A" for fields; use your best professional judgment to provide estimates.
+Your job: Generate a comprehensive, ACTION-ORIENTED trip plan for the trail the system selected as primary.
+This trail already passed deterministic feasibility and safety gates. If plannerNote mentions elevated or alpine risk, emphasize conservative timing, gear, and turn-around judgment.
+Even if the trail is not a perfect match subjectively, you MUST still provide a realistic, usable plan based on the data available. DO NOT return "N/A" for fields; use your best professional judgment to provide estimates.
+
+${plannerNote ? `Planner note (deterministic): ${plannerNote}` : ''}
 
 User Intent:
 ${JSON.stringify(intent, null, 2)}
@@ -826,6 +838,7 @@ Respond ONLY with valid JSON. Do not use N/A. Provide realistic values.`;
 export interface RecommendationPreferences {
   difficulty?: 'beginner' | 'intermediate' | 'advanced' | 'extreme';
   maxDistance?: number;
+  tripType?: TripType;
   terrain?: string[];
   features?: string[];
   reasoning: string;
@@ -844,6 +857,7 @@ export function intentToLegacyPrefs(intent: IntentProfile): RecommendationPrefer
   return {
     difficulty: diffMap[intent.difficulty] || 'intermediate',
     maxDistance: intent.searchDistanceKm,
+    tripType: intent.tripType,
     terrain: [],
     features: intent.sceneryPreferences,
     reasoning: intent.reasoning,

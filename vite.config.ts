@@ -12,6 +12,13 @@ export default defineConfig(({mode}) => {
   ).trim();
   return {
     plugins: [react(), tailwindcss()],
+    build: {
+      chunkSizeWarningLimit: 1500,
+    },
+    test: {
+      environment: 'node',
+      include: ['src/**/*.test.ts'],
+    },
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
       __TRAILSCOUT_GEMINI__: JSON.stringify(geminiForClient),

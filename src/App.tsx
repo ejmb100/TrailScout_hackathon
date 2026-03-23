@@ -53,6 +53,18 @@ import { enrichTrailsWithElevation } from './services/elevationService';
 import { fetchForecastForHike, type HikeForecast } from './services/weatherService';
 import { fetchApproxIpLocation, type ApproxIpLocation } from './services/ipGeoService';
 import { scoreAndFilterTrails, calculateDistance } from './utils/trailScoring';
+import { fetchOfficialTrailsInBBox, getOfficialTrailCount, getDataVintage } from './services/officialTrailService';
+import { fetchCampsitesInBBox } from './services/campsiteService';
+import { mergeTrailSources } from './services/trailMergeService';
+import {
+  integratePlanner,
+  buildDeclinedTripPlan,
+  buildMultiDayItinerary,
+  type PlannerRecommendation,
+  type PlannerScoredCandidate,
+  type MultiDayItinerary,
+} from './planner';
+import { buildTravelPlan, type TravelPlan } from './services/travelLogisticsService';
 
 // ─── Screen types ─────────────────────────────────────────────────────
 
@@ -154,6 +166,8 @@ export default function App() {
   
   // Input state
   const [intent, setIntent] = useState('');
+  const [tripMode, setTripMode] = useState<'day' | 'multi'>('day');
+  const [tripDays, setTripDays] = useState(3);
 
   // Agent pipeline state
   const [agentStage, setAgentStage] = useState<AgentStage>('idle');
@@ -162,6 +176,8 @@ export default function App() {
   const [candidates, setCandidates] = useState<TrailCandidate[]>([]);
   const [validations, setValidations] = useState<ValidationResult[]>([]);
   const [tripPlan, setTripPlan] = useState<TripPlan | null>(null);
+  const [multiDayItinerary, setMultiDayItinerary] = useState<MultiDayItinerary | null>(null);
+  const [travelPlan, setTravelPlan] = useState<TravelPlan | null>(null);
   const [selectedTrailIndex, setSelectedTrailIndex] = useState(0);
 
   // Agent summaries for the workflow display
@@ -175,6 +191,11 @@ export default function App() {
 
   /** Open-Meteo forecast for hike area (set after intent). */
   const [hikeForecast, setHikeForecast] = useState<HikeForecast | null>(null);
+  /** Deterministic planner outcome (gates, primary id, banners). */
+  const [plannerRecommendation, setPlannerRecommendation] = useState<PlannerRecommendation | null>(null);
+  /** Whether official USFS trails contributed to the current search. */
+  const [hasOfficialTrails, setHasOfficialTrails] = useState(false);
+  const [plannerByTrailId, setPlannerByTrailId] = useState<Map<number, PlannerScoredCandidate> | null>(null);
   /** Coarse IP-based location for default map center (VPN may skew). */
   const [approxUserLocation, setApproxUserLocation] = useState<ApproxIpLocation | null>(null);
 
@@ -241,12 +262,17 @@ export default function App() {
     setCandidates([]);
     setValidations([]);
     setTripPlan(null);
+    setMultiDayItinerary(null);
+    setTravelPlan(null);
     setSelectedTrailIndex(0);
     setIntentSummary('');
     setResearchSummary('');
     setValidationSummary('');
     setActionSummary('');
     setHikeForecast(null);
+    setPlannerRecommendation(null);
+    setPlannerByTrailId(null);
+    setHasOfficialTrails(false);
 
     // Scroll to top
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -254,8 +280,27 @@ export default function App() {
     try {
       // ── Agent 1: Intent ──────────────────────────────────────────
       setAgentStage('intent');
-      const profile = await runIntentAgent(query);
-      const isMultiDay = profile.tripType === 'multi_day';
+      const rawProfile = await runIntentAgent(query);
+
+      // Override trip type / days from the explicit UI selector
+      const isMultiDay = tripMode === 'multi';
+      const profile: typeof rawProfile = isMultiDay
+        ? (() => {
+            const days = tripDays;
+            const dailyKm = Math.max(rawProfile.dailyDistanceKm, 12);
+            const totalKm = dailyKm * days;
+            return {
+              ...rawProfile,
+              tripType: 'multi_day' as const,
+              tripLengthDays: days,
+              dailyDistanceKm: dailyKm,
+              searchDistanceKm: totalKm,
+              maxDistanceKm: Math.max(rawProfile.maxDistanceKm, totalKm),
+            };
+          })()
+        : { ...rawProfile, tripType: 'day_hike' as const, tripLengthDays: 1 };
+      console.info('[TrailScout] trip mode override:', { tripMode, tripDays, tripType: profile.tripType, searchDistanceKm: profile.searchDistanceKm });
+
       setIntentProfile(profile);
       setIntentSummary(profile.reasoning);
 
@@ -281,8 +326,21 @@ export default function App() {
         widenedBBox.maxLon
       );
 
+      // Fetch USFS trails and campsites in parallel (both are bbox-scoped API calls)
+      const [officialTrails] = await Promise.all([
+        fetchOfficialTrailsInBBox(
+          widenedBBox.minLat, widenedBBox.minLon, widenedBBox.maxLat, widenedBBox.maxLon
+        ),
+        fetchCampsitesInBBox(
+          widenedBBox.minLat, widenedBBox.minLon, widenedBBox.maxLat, widenedBBox.maxLon
+        ),
+      ]);
+      const mergedTrails = mergeTrailSources(rawTrails, officialTrails);
+      setHasOfficialTrails(officialTrails.length > 0);
+      console.info(`[TrailScout] official trails in bbox: ${officialTrails.length}, merged total: ${mergedTrails.length}`);
+
       const legacyPrefs = intentToLegacyPrefs(profile);
-      const scored = scoreAndFilterTrails(rawTrails, legacyPrefs).slice(0, isMultiDay ? 10 : 20);
+      const scored = scoreAndFilterTrails(mergedTrails, legacyPrefs).slice(0, isMultiDay ? 10 : 20);
 
       const withElevation = await enrichTrailsWithElevation(scored, {
         concurrency: isMultiDay ? 4 : 3,
@@ -347,7 +405,7 @@ export default function App() {
       });
       setCandidates(finalCandidates);
       setResearchSummary(
-        `Found ${finalCandidates.length} strong ${isMultiDay ? 'backpacking' : 'hiking'} candidates in ${profile.estimatedRegionName}${partialResults ? ' using partial OSM data' : ''}. Top match: ${finalCandidates[0]?.trailName || 'N/A'} (${finalCandidates[0]?.matchScore || 0}%).`
+        `Found ${finalCandidates.length} strong ${isMultiDay ? 'backpacking' : 'hiking'} candidates in ${profile.estimatedRegionName}${partialResults ? ' using partial OSM data' : ''}. Top research match: ${finalCandidates[0]?.trailName || 'N/A'} (${finalCandidates[0]?.matchScore || 0}%).`
       );
 
       // ── Agent 3: Validation ──────────────────────────────────────
@@ -355,23 +413,96 @@ export default function App() {
       const validationResults = await runValidationAgent(profile, finalCandidates);
       const finalValidations =
         validationResults.length > 0 ? validationResults : fallbackValidationResults(finalCandidates, profile);
-      setValidations(finalValidations);
-      const recommended = finalValidations.filter(v => v.isRecommended).length;
-      const topFit = finalValidations[0]?.overallFit || 'unknown';
-      setValidationSummary(`${recommended} trails passed validation. Top trail rated "${topFit}" with ${finalValidations[0]?.confidenceScore || 0}% confidence.`);
+
+      const integrated = integratePlanner(profile, forecast, trailById, finalCandidates, finalValidations, query);
+      setCandidates(integrated.candidates);
+      setValidations(integrated.validations);
+      setPlannerRecommendation(integrated.recommendation);
+      setPlannerByTrailId(integrated.plannerByTrailId);
+
+      setResearchSummary(
+        `Found ${integrated.candidates.length} strong ${isMultiDay ? 'backpacking' : 'hiking'} candidates in ${profile.estimatedRegionName}${partialResults ? ' using partial OSM data' : ''}. After feasibility gates, top ordered: ${integrated.candidates[0]?.trailName || 'N/A'}.`
+      );
+
+      const primaryId = integrated.recommendation.primaryTrailId;
+      const recommendedCount = integrated.validations.filter((v) => v.isRecommended).length;
+      const gateNote =
+        integrated.recommendation.status === 'none'
+          ? 'No trail passed hard gates — review list for context only.'
+          : integrated.recommendation.status === 'conditional'
+            ? `Primary pick is conditional (${integrated.recommendation.tripRiskTier} risk tier).`
+            : 'Primary pick passed deterministic gates.';
+      setValidationSummary(
+        `${gateNote} ${recommendedCount ? 1 : 0} primary recommendation. Ordered confidence (top): ${integrated.validations[0]?.confidenceScore ?? 0}%.`
+      );
 
       // ── Agent 4: Action ──────────────────────────────────────────
       setAgentStage('action');
-      const topCandidate = finalCandidates[0];
-      const topValidation = finalValidations[0];
-      const backupCandidate = finalCandidates.length > 1 ? finalCandidates[1] : undefined;
-      
-      const plan = await runActionAgent(profile, topCandidate, topValidation, backupCandidate);
+      const topCandidate =
+        primaryId != null
+          ? integrated.candidates.find((c) => c.trailId === primaryId) ?? integrated.candidates[0]
+          : integrated.candidates[0];
+      const topValidation =
+        integrated.validations.find((v) => v.trailId === topCandidate.trailId) ?? integrated.validations[0];
+      const backupCandidate =
+        integrated.candidates.find((c) => c.trailId !== topCandidate.trailId) ?? undefined;
+
+      const plannerNoteParts: string[] = [];
+      if (integrated.recommendation.tripRiskTier && integrated.recommendation.tripRiskTier !== 'standard') {
+        plannerNoteParts.push(`Trip risk tier: ${integrated.recommendation.tripRiskTier}`);
+      }
+      if (integrated.recommendation.criticalWarnings.length > 0) {
+        plannerNoteParts.push(`Warnings: ${integrated.recommendation.criticalWarnings.slice(0, 3).join(' | ')}`);
+      }
+      if (integrated.recommendation.geometryDisclaimer) {
+        plannerNoteParts.push(integrated.recommendation.geometryDisclaimer);
+      }
+
+      const plan =
+        primaryId != null && topCandidate && topValidation
+          ? await runActionAgent(
+              profile,
+              topCandidate,
+              topValidation,
+              backupCandidate,
+              plannerNoteParts.join('\n')
+            )
+          : buildDeclinedTripPlan(profile, integrated.recommendation);
       setTripPlan(plan);
+
+      // Build campsite-aware itinerary for multi-day trips
+      if (isMultiDay && primaryId != null) {
+        const primaryTrail = trailById.get(primaryId);
+        if (primaryTrail && primaryTrail.path.length >= 2) {
+          const itinerary = buildMultiDayItinerary(primaryTrail.path, profile.tripLengthDays, primaryTrail, {
+            targetDailyKm: profile.dailyDistanceKm,
+          });
+          setMultiDayItinerary(itinerary);
+          console.info('[TrailScout] multi-day itinerary', itinerary);
+        }
+      } else {
+        setMultiDayItinerary(null);
+      }
+
+      // Build travel logistics (airport + ground transport recommendations)
+      const trailCenter = {
+        lat: (profile.bbox.minLat + profile.bbox.maxLat) / 2,
+        lng: (profile.bbox.minLon + profile.bbox.maxLon) / 2,
+      };
+      const travel = buildTravelPlan(
+        approxUserLocation ? { lat: approxUserLocation.lat, lng: approxUserLocation.lng, city: approxUserLocation.city, region: approxUserLocation.region } : null,
+        trailCenter.lat,
+        trailCenter.lng,
+        profile.estimatedRegionName
+      );
+      setTravelPlan(travel);
+
       setActionSummary(
-        plan.tripType === 'multi_day'
-          ? `Backpacking plan ready: ${plan.tripLengthDays} days, depart ${plan.departureTime}, finish by ${plan.expectedReturnTime}.`
-          : `Trip plan ready: Depart ${plan.departureTime}, return by ${plan.expectedReturnTime}. ${plan.whatToBring.length} items to bring.`
+        integrated.recommendation.primaryTrailId == null
+          ? 'No primary trail selected — review safety notes in the plan view.'
+          : plan.tripType === 'multi_day'
+            ? `Backpacking plan ready: ${plan.tripLengthDays} days, depart ${plan.departureTime}, finish by ${plan.expectedReturnTime}.`
+            : `Trip plan ready: Depart ${plan.departureTime}, return by ${plan.expectedReturnTime}. ${Array.isArray(plan.whatToBring) ? plan.whatToBring.length : 0} items to bring.`
       );
 
       // ── Complete ─────────────────────────────────────────────────
@@ -402,6 +533,9 @@ export default function App() {
     setScreen('home');
     setAgentStage('idle');
     setHikeForecast(null);
+    setPlannerRecommendation(null);
+    setPlannerByTrailId(null);
+    setHasOfficialTrails(false);
   };
 
   // ═══════════════════════════════════════════════════════════════════
@@ -492,7 +626,7 @@ export default function App() {
                 <div ref={searchShellRef} className="max-w-2xl mx-auto mb-6 relative z-30">
                   <form onSubmit={handleSearch}>
                     <div className="glass rounded-2xl p-2 shadow-2xl">
-                      <div className="flex flex-col gap-1">
+                      <div className="flex flex-col gap-1.5">
                         <div className="flex items-center gap-2 sm:gap-3">
                           <div className="pl-3 sm:pl-4 shrink-0">
                             <MapIcon className="text-offwhite/30 w-5 h-5" />
@@ -519,11 +653,57 @@ export default function App() {
                           >
                             Examples
                           </button>
+                        </div>
+
+                        {/* Trip mode selector */}
+                        <div className="flex items-center gap-2 px-3 sm:px-4 pb-1">
+                          <div className="flex rounded-lg overflow-hidden border border-white/10 text-[11px] sm:text-xs font-semibold">
+                            <button
+                              type="button"
+                              onClick={() => setTripMode('day')}
+                              className={`px-3 py-1.5 transition-colors ${
+                                tripMode === 'day'
+                                  ? 'bg-teal/20 text-teal'
+                                  : 'text-offwhite/40 hover:text-offwhite/60'
+                              }`}
+                            >
+                              Day Hike
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setTripMode('multi')}
+                              className={`px-3 py-1.5 transition-colors border-l border-white/10 ${
+                                tripMode === 'multi'
+                                  ? 'bg-teal/20 text-teal'
+                                  : 'text-offwhite/40 hover:text-offwhite/60'
+                              }`}
+                            >
+                              Multi-Day
+                            </button>
+                          </div>
+
+                          {tripMode === 'multi' && (
+                            <div className="flex items-center gap-1.5">
+                              <select
+                                value={tripDays}
+                                onChange={(e) => setTripDays(Number(e.target.value))}
+                                className="bg-white/5 border border-white/10 rounded-lg text-offwhite text-[11px] sm:text-xs px-2 py-1.5 focus:outline-none focus:border-teal/40 appearance-none cursor-pointer"
+                              >
+                                {[2, 3, 4, 5, 6, 7].map((d) => (
+                                  <option key={d} value={d} className="bg-navy text-offwhite">
+                                    {d} days
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          )}
+
+                          <div className="flex-1" />
                           <button
                             type="submit"
                             id="plan-my-hike-btn"
                             disabled={!intent.trim()}
-                            className="shrink-0 gradient-orange text-navy px-4 sm:px-6 py-3 sm:py-3.5 rounded-xl font-bold text-xs sm:text-sm hover:shadow-lg hover:shadow-orange/20 transition-all flex items-center gap-2 disabled:opacity-40 whitespace-nowrap"
+                            className="shrink-0 gradient-orange text-navy px-4 sm:px-6 py-2 sm:py-2.5 rounded-xl font-bold text-xs sm:text-sm hover:shadow-lg hover:shadow-orange/20 transition-all flex items-center gap-2 disabled:opacity-40 whitespace-nowrap"
                           >
                             <span className="sm:hidden inline-flex items-center gap-1">
                               Plan <ArrowRight className="w-4 h-4" />
@@ -703,11 +883,21 @@ export default function App() {
               animate={{ opacity: 1, y: 0 }}
               className="text-center mb-12"
             >
-              <div className="inline-flex items-center gap-2 bg-green/10 border border-green/20 px-4 py-2 rounded-full mb-4">
-                <ShieldCheck className="w-3.5 h-3.5 text-green" />
-                <span className="text-xs font-semibold text-green uppercase tracking-wider">
-                  {candidates.length} Trails Analyzed & Validated
-                </span>
+              <div className="flex flex-wrap items-center justify-center gap-2 mb-4">
+                <div className="inline-flex items-center gap-2 bg-green/10 border border-green/20 px-4 py-2 rounded-full">
+                  <ShieldCheck className="w-3.5 h-3.5 text-green" />
+                  <span className="text-xs font-semibold text-green uppercase tracking-wider">
+                    {candidates.length} Trails Analyzed & Validated
+                  </span>
+                </div>
+                {hasOfficialTrails && (
+                  <div className="inline-flex items-center gap-2 bg-amber/10 border border-amber/25 px-4 py-2 rounded-full">
+                    <ShieldCheck className="w-3.5 h-3.5 text-amber" />
+                    <span className="text-xs font-semibold text-amber uppercase tracking-wider">
+                      Includes USFS Verified Trails
+                    </span>
+                  </div>
+                )}
               </div>
               <h2 className="font-display text-4xl md:text-5xl font-bold text-offwhite mb-3">
                 Your Top Matches
@@ -716,7 +906,7 @@ export default function App() {
                 {intentProfile?.estimatedRegionName && (
                   <span className="text-teal font-medium">{intentProfile.estimatedRegionName}</span>
                 )}{' '}
-                — ranked by fit, validated against your constraints.
+                — ordered after deterministic feasibility and safety gates; AI match scores are secondary.
               </p>
               {intentProfile && intentProfile.maxDistanceKm > 0 && (
                 <p className="text-offwhite/35 text-sm mt-3 max-w-xl mx-auto">
@@ -738,10 +928,65 @@ export default function App() {
                     </>
                   )}
                   {' '}Trail lengths below are{' '}
-                  <span className="text-offwhite/50">mapped OSM geometry</span> (route or segment), not always a full loop.
+                  <span className="text-offwhite/50">{hasOfficialTrails ? 'mapped USFS/OSM geometry' : 'mapped OSM geometry'}</span> (route or segment), not always a full loop.
                 </p>
               )}
             </motion.div>
+
+            {plannerRecommendation && plannerRecommendation.status === 'none' && (
+              <motion.div
+                initial={{ opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="mb-6 max-w-2xl mx-auto rounded-2xl border border-red/30 bg-red/10 px-4 py-3 text-left"
+              >
+                <div className="text-[10px] font-bold text-red uppercase tracking-wider mb-1">No primary recommendation</div>
+                <p className="text-sm text-offwhite/85 leading-snug">
+                  No trail passed deterministic distance, timing, weather, and safety gates. Match scores are for context only — verify everything locally.
+                </p>
+                {plannerRecommendation.blockingReasons.length > 0 && (
+                  <ul className="mt-2 text-xs text-offwhite/65 list-disc pl-4 space-y-1">
+                    {plannerRecommendation.blockingReasons.slice(0, 5).map((r, i) => (
+                      <li key={i}>{r}</li>
+                    ))}
+                  </ul>
+                )}
+              </motion.div>
+            )}
+
+            {plannerRecommendation && plannerRecommendation.status === 'conditional' && (
+              <motion.div
+                initial={{ opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="mb-6 max-w-2xl mx-auto rounded-2xl border border-amber/35 bg-amber/10 px-4 py-3 text-left"
+              >
+                <div className="text-[10px] font-bold text-amber uppercase tracking-wider mb-1">Conditional primary pick</div>
+                <p className="text-sm text-offwhite/85 leading-snug">
+                  The ordered trail passes gates but is flagged as higher risk ({plannerRecommendation.tripRiskTier}). Read warnings carefully and turn back if conditions disagree.
+                </p>
+                {plannerRecommendation.criticalWarnings.length > 0 && (
+                  <ul className="mt-2 text-xs text-offwhite/65 list-disc pl-4 space-y-1">
+                    {plannerRecommendation.criticalWarnings.slice(0, 4).map((w, i) => (
+                      <li key={i}>{w}</li>
+                    ))}
+                  </ul>
+                )}
+              </motion.div>
+            )}
+
+            {plannerRecommendation?.assumptions && plannerRecommendation.assumptions.length > 0 && plannerRecommendation.status === 'recommended' && (
+              <motion.div
+                initial={{ opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="mb-6 max-w-2xl mx-auto rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-left"
+              >
+                <div className="text-[10px] font-bold text-offwhite/50 uppercase tracking-wider mb-1">Assumptions</div>
+                <ul className="text-xs text-offwhite/65 list-disc pl-4 space-y-1">
+                  {plannerRecommendation.assumptions.slice(0, 4).map((a, i) => (
+                    <li key={i}>{a}</li>
+                  ))}
+                </ul>
+              </motion.div>
+            )}
 
             {hikeForecast && (
               <motion.div
@@ -805,6 +1050,7 @@ export default function App() {
                     trail={trail}
                     candidate={candidate}
                     validation={validation}
+                    planner={plannerByTrailId?.get(candidate.trailId)}
                     rank={idx}
                     isSelected={selectedTrailIndex === idx}
                     targetMaxKm={intentProfile?.maxDistanceKm}
@@ -879,6 +1125,9 @@ export default function App() {
                   trailIndex={selectedTrailIndex}
                   intentProfile={intentProfile ?? undefined}
                   targetHikeKm={intentProfile?.maxDistanceKm}
+                  plannerRecommendation={plannerRecommendation ?? undefined}
+                  multiDayItinerary={multiDayItinerary ?? undefined}
+                  travelPlan={travelPlan ?? undefined}
                   onBack={() => {
                     setScreen('results');
                     window.scrollTo({ top: 0, behavior: 'smooth' });

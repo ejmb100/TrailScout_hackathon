@@ -51,7 +51,27 @@ function pointsClose(a: TrailPoint, b: TrailPoint): boolean {
   return Math.abs(a.lat - b.lat) < 1e-5 && Math.abs(a.lng - b.lng) < 1e-5;
 }
 
-/** Join OSM member ways in relation order; drop duplicate node at seams. */
+const DEG_TO_RAD = Math.PI / 180;
+const R_KM = 6371;
+
+function haversineKm(a: TrailPoint, b: TrailPoint): number {
+  const dLat = (b.lat - a.lat) * DEG_TO_RAD;
+  const dLng = (b.lng - a.lng) * DEG_TO_RAD;
+  const sinLat = Math.sin(dLat / 2);
+  const sinLng = Math.sin(dLng / 2);
+  const h = sinLat * sinLat + Math.cos(a.lat * DEG_TO_RAD) * Math.cos(b.lat * DEG_TO_RAD) * sinLng * sinLng;
+  return R_KM * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+}
+
+/**
+ * Max gap (km) between the endpoint of one segment and the start of the next
+ * before we consider them disconnected. Segments beyond this threshold are
+ * dropped to avoid drawing phantom straight lines across terrain.
+ */
+const MAX_SEGMENT_GAP_KM = 0.5;
+
+/** Join OSM member ways in relation order; drop duplicate node at seams.
+ *  Skips segments whose start is too far from the chain's current endpoint. */
 function concatTrailSegments(segments: TrailPoint[][]): TrailPoint[] {
   if (segments.length === 0) return [];
   const out: TrailPoint[] = [...segments[0]];
@@ -60,9 +80,10 @@ function concatTrailSegments(segments: TrailPoint[][]): TrailPoint[] {
     if (seg.length === 0) continue;
     if (out.length && pointsClose(out[out.length - 1], seg[0])) {
       out.push(...seg.slice(1));
-    } else {
+    } else if (out.length && haversineKm(out[out.length - 1], seg[0]) < MAX_SEGMENT_GAP_KM) {
       out.push(...seg);
     }
+    // else: gap too large — skip this segment to avoid phantom lines
   }
   return out;
 }
