@@ -22,6 +22,7 @@ export default defineConfig(({mode}) => {
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
       __TRAILSCOUT_GEMINI__: JSON.stringify(geminiForClient),
+      __TRAILSCOUT_RIDB_KEY__: JSON.stringify((env.RIDB_API_KEY || '').trim()),
     },
     resolve: {
       alias: {

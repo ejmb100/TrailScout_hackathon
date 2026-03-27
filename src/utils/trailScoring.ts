@@ -1,5 +1,6 @@
 import { TrailData } from '../services/osmService';
-import { RecommendationPreferences } from '../services/geminiService';
+import { RecommendationPreferences, type IntentProfile } from '../services/geminiService';
+import { estimateEffort, type EffortEstimate } from '../planner/effort';
 
 /**
  * Best-effort scoring utility to rank OSM trails based on user preferences.
@@ -140,4 +141,77 @@ export function calculateDistance(path: { lat: number; lng: number }[]): number 
     totalDist += R * c;
   }
   return totalDist;
+}
+
+/**
+ * Deterministic composite match score (0–100).
+ *
+ * Weights: distance ratio (40%), elevation/effort fit (25%),
+ * tag/feature match (20%), source quality (15%).
+ *
+ * This replaces the LLM-assigned matchScore so the Research Agent
+ * is only responsible for prose explanation.
+ */
+export function computeDeterministicMatchScore(
+  trail: TrailData,
+  intent: IntentProfile,
+): number {
+  const distKm = calculateDistance(trail.path);
+  const isMultiDay = intent.tripType === 'multi_day';
+  const targetKm = isMultiDay
+    ? Math.max(intent.searchDistanceKm, intent.dailyDistanceKm * intent.tripLengthDays)
+    : Math.max(intent.maxDistanceKm, 1);
+
+  // ── Distance ratio component (0–40) ──
+  const ratio = targetKm > 0 ? distKm / targetKm : 0;
+  let distScore: number;
+  if (ratio >= 0.8 && ratio <= 1.2) distScore = 40;
+  else if (ratio >= 0.6 && ratio <= 1.4) distScore = 32;
+  else if (ratio >= 0.4 && ratio <= 1.8) distScore = 20;
+  else if (ratio >= 0.25) distScore = 10;
+  else distScore = 2;
+
+  // ── Elevation / effort fit (0–25) ──
+  let effortScore = 12; // neutral default
+  const effort = estimateEffort(trail, { difficultyHint: intent.difficulty });
+  if (effort.totalAscentM > 0) {
+    const daylightH = isMultiDay ? 8 * intent.tripLengthDays : 10;
+    const effortRatio = effort.adjustedTimeHours / daylightH;
+    if (effortRatio >= 0.4 && effortRatio <= 0.85) effortScore = 25;
+    else if (effortRatio >= 0.25 && effortRatio <= 1.0) effortScore = 18;
+    else if (effortRatio > 1.0) effortScore = 5;
+    else effortScore = 10;
+  }
+
+  // ── Tag / feature match (0–20) ──
+  let tagScore = 5;
+  const tags = trail.tags;
+  const diffMap: Record<string, string[]> = {
+    easy: ['hiking', 't1'],
+    moderate: ['mountain_hiking', 't2', 't3'],
+    hard: ['demanding_mountain_hiking', 'alpine_hiking', 't4', 't5'],
+    expert: ['demanding_alpine_hiking', 'difficult_alpine_hiking', 't6'],
+  };
+  const targetTags = diffMap[intent.difficulty] ?? [];
+  if (tags.sac_scale && targetTags.some(t => tags.sac_scale.includes(t))) {
+    tagScore += 8;
+  }
+  if (trail.name) tagScore += 3;
+  const scenery = intent.sceneryPreferences ?? [];
+  if (scenery.length > 0 && trail.name) {
+    const nameLower = trail.name.toLowerCase();
+    const hits = scenery.filter(f => nameLower.includes(f.toLowerCase()));
+    tagScore += Math.min(4, hits.length * 2);
+  }
+  tagScore = Math.min(20, tagScore);
+
+  // ── Source quality (0–15) ──
+  let sourceScore = 5;
+  const src = tags.trailscout_source ?? '';
+  if (src.includes('usfs_nfs')) sourceScore = 15;
+  else if (src === 'osm_relation') sourceScore = 12;
+  else if (src === 'osm_way_segment') sourceScore = 7;
+
+  const total = Math.round(Math.min(100, Math.max(5, distScore + effortScore + tagScore + sourceScore)));
+  return total;
 }

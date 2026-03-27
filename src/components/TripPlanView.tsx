@@ -24,14 +24,19 @@ import {
   Tent,
   Plane,
   Car,
+  Gauge,
 } from 'lucide-react';
 import type { IntentProfile, TripPlan, TrailCandidate, ValidationResult } from '../services/geminiService';
-import type { PlannerRecommendation, MultiDayItinerary } from '../planner';
+import type { PlannerRecommendation, MultiDayItinerary, AssumptionEntry, EffortEstimate } from '../planner';
+import { effortDifficultyTier, effortTierColor } from '../planner';
 import type { TravelPlan } from '../services/travelLogisticsService';
 import type { TrailData } from '../services/osmService';
+import type { CampsiteStatus } from '../services/campsiteStatusService';
+import type { ForestAlerts } from '../services/forestAlertService';
+import { statusLabel, statusColor } from '../services/campsiteStatusService';
 import { calculateDistance } from '../utils/trailScoring';
 import { getDataVintage } from '../services/officialTrailService';
-import MapContainer from './MapContainer';
+import MapContainer, { type MapMarkerData } from './MapContainer';
 
 // Same curated images as ResultCard
 const trailImages = [
@@ -54,6 +59,10 @@ interface TripPlanViewProps {
   plannerRecommendation?: PlannerRecommendation;
   multiDayItinerary?: MultiDayItinerary;
   travelPlan?: TravelPlan;
+  campsiteStatuses?: CampsiteStatus[];
+  forestAlerts?: ForestAlerts;
+  assumptions?: AssumptionEntry[];
+  effortEstimate?: EffortEstimate;
   onBack: () => void;
 }
 
@@ -68,6 +77,10 @@ const TripPlanView: React.FC<TripPlanViewProps> = ({
   plannerRecommendation,
   multiDayItinerary,
   travelPlan,
+  campsiteStatuses,
+  forestAlerts,
+  assumptions = [],
+  effortEstimate,
   onBack,
 }) => {
   const [calendarAdded, setCalendarAdded] = useState(false);
@@ -82,6 +95,17 @@ const TripPlanView: React.FC<TripPlanViewProps> = ({
   const logisticsNotes = Array.isArray(plan.logisticsNotes) ? plan.logisticsNotes : [];
   const isMultiDay = plan.tripType === 'multi_day' || intentProfile?.tripType === 'multi_day';
   const tripLengthDays = Math.max(plan.tripLengthDays || intentProfile?.tripLengthDays || 1, 1);
+
+  const effortTier = effortEstimate ? effortDifficultyTier(effortEstimate, distKm) : null;
+  const effortColor = effortTier ? effortTierColor(effortTier) : 'text-offwhite/50';
+
+  const poiMarkers: MapMarkerData[] = (campsiteStatuses ?? []).map(cs => ({
+    lat: cs.campsite.lat,
+    lng: cs.campsite.lng,
+    name: cs.campsite.name,
+    type: cs.campsite.siteType === 'trailhead' ? 'trailhead' as const : 'campsite' as const,
+    status: cs.status,
+  }));
 
   const nearestAirport = travelPlan?.nearestAirports[0];
   const trailheadArrivalLabel = nearestAirport
@@ -306,6 +330,7 @@ END:VCALENDAR`;
             <MapContainer
               trails={[{ ...trail, tags: { ...trail.tags, color: '#FF7D0F' } }]}
               focusedTrailId={trail.id}
+              poiMarkers={poiMarkers}
             />
           </div>
           <p className="text-[11px] text-offwhite/40 mt-3 px-1">
@@ -377,16 +402,18 @@ END:VCALENDAR`;
             color: 'text-purple',
           },
           {
-            icon: isMultiDay ? Tent : Sun,
-            label: isMultiDay ? 'Trip Length' : 'Type',
-            value: isMultiDay ? `${tripLengthDays} day${tripLengthDays === 1 ? '' : 's'}` : 'Day hike',
-            color: 'text-orange',
+            icon: Gauge,
+            label: 'Effort',
+            value: effortTier ?? '—',
+            color: effortColor,
+            sub: effortEstimate ? `~${effortEstimate.adjustedTimeHours} h hiking` : undefined,
           },
-        ].map(({ icon: Icon, label, value, color }) => (
+        ].map(({ icon: Icon, label, value, color, sub }: { icon: any; label: string; value: string; color: string; sub?: string }) => (
           <div key={label} className="glass-bright rounded-2xl p-4 text-center">
             <Icon className={`w-5 h-5 ${color} mx-auto mb-2`} />
             <div className="text-[10px] text-offwhite/40 uppercase tracking-wider mb-1">{label}</div>
             <div className="text-sm font-bold text-offwhite">{value}</div>
+            {sub && <div className="text-[10px] text-offwhite/35 mt-0.5">{sub}</div>}
           </div>
         ))}
       </div>
@@ -404,7 +431,11 @@ END:VCALENDAR`;
                 <>
                   <TimelineItem
                     time="Start"
-                    label={trailheadArrivalLabel}
+                    label={
+                      multiDayItinerary.entryTrailhead
+                        ? `${trailheadArrivalLabel} Entry: ${multiDayItinerary.entryTrailhead.name} trailhead.`
+                        : trailheadArrivalLabel
+                    }
                     icon="📍"
                   />
                   {multiDayItinerary.days.map((seg) => {
@@ -417,6 +448,9 @@ END:VCALENDAR`;
                           label={
                             <span>
                               <span className="text-teal font-semibold tabular-nums">{seg.distanceKm} km</span>
+                              {seg.effortHours != null && (
+                                <span className="text-blue/70 ml-1 text-[11px]">~{seg.effortHours} h</span>
+                              )}
                               {' '}
                               <span className="text-offwhite/50">(km {seg.startKm}–{seg.endKm})</span>
                               {seg.wilderness && (
@@ -424,13 +458,30 @@ END:VCALENDAR`;
                               )}
                               <span className="block mt-1 text-[12px] text-offwhite/70 leading-relaxed">{seg.notes}</span>
                               {seg.campsite && !isLast && (
-                                <span className="block mt-1 text-[11px] text-offwhite/45 flex items-center gap-1">
+                                <span className="block mt-1 text-[11px] text-offwhite/45 flex items-center gap-1 flex-wrap">
                                   <Tent className="w-3 h-3 inline" />
                                   {seg.campsite.name}
                                   {seg.campsite.water === true && <span className="text-blue/60 ml-1">· water</span>}
                                   {seg.campsite.water === false && <span className="text-red/50 ml-1">· no water</span>}
                                   {seg.campsite.fee && <span className="text-amber/60 ml-1">· fee</span>}
-                                  {seg.approvedSite && <span className="text-green/50 ml-1">· USFS approved</span>}
+                                  {seg.campsiteStatus ? (
+                                    <span className={`ml-1 text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${
+                                      statusColor(seg.campsiteStatus) === 'emerald' ? 'text-emerald-400/80 bg-emerald-400/10' :
+                                      statusColor(seg.campsiteStatus) === 'sky' ? 'text-sky-400/80 bg-sky-400/10' :
+                                      statusColor(seg.campsiteStatus) === 'amber' ? 'text-amber/80 bg-amber/10' :
+                                      'text-red/80 bg-red/10'
+                                    }`}>
+                                      {statusLabel(seg.campsiteStatus)}
+                                      {seg.campsiteConfidence != null && ` · ${seg.campsiteConfidence}%`}
+                                    </span>
+                                  ) : (
+                                    seg.approvedSite && <span className="text-green/50 ml-1">· USFS approved</span>
+                                  )}
+                                  {seg.campsiteSources && seg.campsiteSources.length > 0 && (
+                                    <span className="text-[9px] text-offwhite/25 ml-1">
+                                      ({seg.campsiteSources.join(' + ')})
+                                    </span>
+                                  )}
                                 </span>
                               )}
                               {!seg.approvedSite && !isLast && (
@@ -445,7 +496,15 @@ END:VCALENDAR`;
                       </React.Fragment>
                     );
                   })}
-                  <TimelineItem time="Finish" label={`Plan to be off trail by ${plan.expectedReturnTime}.`} icon="✅" />
+                  <TimelineItem
+                    time="Finish"
+                    label={
+                      multiDayItinerary.exitTrailhead
+                        ? `Exit at ${multiDayItinerary.exitTrailhead.name} trailhead. Plan to be off trail by ${plan.expectedReturnTime}.`
+                        : `Plan to be off trail by ${plan.expectedReturnTime}.`
+                    }
+                    icon="✅"
+                  />
 
                   {multiDayItinerary.warnings.length > 0 && (
                     <div className="mt-3 p-3 rounded-lg bg-amber/5 border border-amber/15">
@@ -456,12 +515,48 @@ END:VCALENDAR`;
                     </div>
                   )}
 
+                  {/* Fire alert banner */}
+                  {forestAlerts && forestAlerts.hasActiveFiresInArea && (
+                    <div className="mt-3 p-3 rounded-lg bg-red/10 border border-red/30">
+                      <div className="text-[10px] font-bold text-red uppercase tracking-wider mb-1 flex items-center gap-1">
+                        <AlertTriangle className="w-3 h-3" /> Active Fire Alert
+                      </div>
+                      <ul className="text-xs text-offwhite/70 space-y-1">
+                        {forestAlerts.incidents.filter(i => i.isActive).map(inc => (
+                          <li key={inc.id}>
+                            {inc.name} — {inc.acres.toLocaleString()} acres
+                            {inc.containment != null && `, ${inc.containment}% contained`}
+                          </li>
+                        ))}
+                      </ul>
+                      <p className="text-[10px] text-red/60 mt-1">
+                        Check fs.usda.gov and InciWeb for current closures before departing.
+                      </p>
+                    </div>
+                  )}
+
                   <div className="mt-3 p-3 rounded-lg bg-white/3 border border-white/8">
                     <p className="text-[11px] text-offwhite/40 leading-relaxed">
                       <Shield className="w-3 h-3 inline mr-1 text-offwhite/30" />
                       {multiDayItinerary.disclaimer}
                     </p>
                   </div>
+
+                  {/* Data provenance card */}
+                  {multiDayItinerary.hasStatusData && (
+                    <div className="mt-3 p-3 rounded-lg bg-white/3 border border-white/8">
+                      <div className="text-[10px] font-bold text-offwhite/50 uppercase tracking-wider mb-2">Data Sources</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        <span className="text-[9px] px-2 py-0.5 rounded-full bg-emerald-400/10 text-emerald-400/70 border border-emerald-400/20">USFS EDW</span>
+                        <span className="text-[9px] px-2 py-0.5 rounded-full bg-sky-400/10 text-sky-400/70 border border-sky-400/20">Recreation.gov</span>
+                        <span className="text-[9px] px-2 py-0.5 rounded-full bg-orange-400/10 text-orange-400/70 border border-orange-400/20">NIFC Fire Data</span>
+                      </div>
+                      <p className="text-[10px] text-offwhite/30 mt-1.5">
+                        Campsite status reflects data from {campsiteStatuses?.length ?? 0} sites cross-referenced across sources.
+                        {forestAlerts && ` Fire data: ${forestAlerts.fetchedAt.slice(0, 10)}.`}
+                      </p>
+                    </div>
+                  )}
                 </>
               ) : isMultiDay ? (
                 <>
@@ -527,8 +622,18 @@ END:VCALENDAR`;
                       />
                     </div>
                     <span className="w-16 text-right tabular-nums text-offwhite/60">{seg.distanceKm} km</span>
+                    {seg.effortHours != null && (
+                      <span className="w-12 text-right tabular-nums text-blue/50 text-[10px]">{seg.effortHours} h</span>
+                    )}
                     {seg.day < multiDayItinerary.days.length && (
-                      seg.approvedSite
+                      seg.campsiteStatus ? (
+                        <span className={`text-[8px] font-bold uppercase px-1.5 py-0.5 rounded shrink-0 ${
+                          statusColor(seg.campsiteStatus) === 'emerald' ? 'text-emerald-400/80 bg-emerald-400/10' :
+                          statusColor(seg.campsiteStatus) === 'sky' ? 'text-sky-400/80 bg-sky-400/10' :
+                          statusColor(seg.campsiteStatus) === 'amber' ? 'text-amber/80 bg-amber/10' :
+                          'text-red/80 bg-red/10'
+                        }`}>{statusLabel(seg.campsiteStatus)}</span>
+                      ) : seg.approvedSite
                         ? <Tent className="w-3 h-3 text-green/50 shrink-0" />
                         : <AlertTriangle className="w-3 h-3 text-red/50 shrink-0" />
                     )}
@@ -611,6 +716,42 @@ END:VCALENDAR`;
               <span className="text-sm font-bold text-teal">{validation.confidenceScore}%</span>
             </div>
           </div>
+
+          {/* Assumption Ledger */}
+          {assumptions.length > 0 && (
+            <div className="glass-bright rounded-2xl p-6">
+              <h3 className="font-display font-bold text-lg text-offwhite mb-4 flex items-center gap-2">
+                <AlertTriangle className="w-5 h-5 text-amber" /> Assumptions & Caveats
+              </h3>
+              <div className="space-y-2">
+                {assumptions
+                  .sort((a, b) => {
+                    const sev = { critical: 0, warning: 1, info: 2 };
+                    return sev[a.severity] - sev[b.severity];
+                  })
+                  .map((a, i) => (
+                  <div key={i} className={`flex items-start gap-2 text-sm ${
+                    a.severity === 'critical' ? 'text-red/80' :
+                    a.severity === 'warning' ? 'text-amber/80' :
+                    'text-offwhite/60'
+                  }`}>
+                    <span className={`mt-1 w-1.5 h-1.5 rounded-full shrink-0 ${
+                      a.severity === 'critical' ? 'bg-red' :
+                      a.severity === 'warning' ? 'bg-amber' :
+                      'bg-offwhite/30'
+                    }`} />
+                    <div className="flex-1">
+                      <span className="text-[9px] font-bold uppercase tracking-wider text-offwhite/30 mr-2">{a.stage}</span>
+                      {a.text}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <p className="text-[10px] text-offwhite/25 mt-3 border-t border-white/5 pt-3">
+                These assumptions were logged by the deterministic pipeline. Verify critical items with local authorities before your trip.
+              </p>
+            </div>
+          )}
 
           {/* Backup */}
           {plan.backupTrailName && plan.backupTrailName !== 'None' && (

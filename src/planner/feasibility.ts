@@ -2,6 +2,7 @@ import type { IntentProfile } from '../services/geminiService';
 import type { TrailData } from '../services/osmService';
 import type { TrailFeasibilityResult } from './types';
 import { calculateDistance } from '../utils/trailScoring';
+import { effortTimeHours } from './effort';
 
 function isRelationTrail(tags: Record<string, string>): boolean {
   return tags.trailscout_source === 'osm_relation';
@@ -35,21 +36,6 @@ export function parseReturnTimeMinutes(s: string): number | null {
     if (h >= 0 && h <= 23 && min >= 0 && min <= 59) return h * 60 + min;
   }
   return null;
-}
-
-function paceKmH(difficulty: IntentProfile['difficulty']): number {
-  switch (difficulty) {
-    case 'easy':
-      return 2.5;
-    case 'moderate':
-      return 3.2;
-    case 'hard':
-      return 3.8;
-    case 'expert':
-      return 4.5;
-    default:
-      return 3.2;
-  }
 }
 
 /** Crude: assume ~45 min one-way drive if we cannot parse tolerance */
@@ -135,11 +121,12 @@ export function assessFeasibility(intent: IntentProfile, trail: TrailData): Trai
   if (returnMin != null && intent.tripType === 'day_hike') {
     const startMin = 7 * 60;
     const driveMin = defaultDriveMinutes(intent);
-    const hikeMin = (distKm / paceKmH(intent.difficulty)) * 60;
+    const hikeHours = effortTimeHours(trail, intent.difficulty);
+    const hikeMin = hikeHours * 60;
     const homeByMin = startMin + driveMin * 2 + hikeMin;
     if (homeByMin > returnMin + 30) {
       blockingReasons.push(
-        `Rough timing (start 7:00, ~${driveMin} min drive each way, ~${(hikeMin / 60).toFixed(1)} h hiking) suggests you may miss your "${intent.latestReturnTime}" return constraint.`
+        `Rough timing (start 7:00, ~${driveMin} min drive each way, ~${hikeHours.toFixed(1)} h hiking incl. terrain) suggests you may miss your "${intent.latestReturnTime}" return constraint.`
       );
     }
   }

@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import type { TrailCandidate, ValidationResult } from '../services/geminiService';
 import type { PlannerScoredCandidate } from '../planner';
+import { estimateEffort, effortDifficultyTier, effortTierColor } from '../planner';
 import type { TrailData } from '../services/osmService';
 import { calculateDistance } from '../utils/trailScoring';
 
@@ -73,6 +74,11 @@ const TrailResultCard: React.FC<TrailResultCardProps> = ({
     : null;
   const isUsfs = (trail.tags.trailscout_source ?? '').includes('usfs_nfs');
   const wildernessName = trail.tags.wilderness_name;
+
+  const effort = estimateEffort(trail);
+  const tier = effortDifficultyTier(effort, distKm);
+  const tierColor = effortTierColor(tier);
+  const tierBg = tierColor.replace('text-', 'bg-') + '/15';
 
   return (
     <motion.div
@@ -205,6 +211,9 @@ const TrailResultCard: React.FC<TrailResultCardProps> = ({
           </p>
 
           <div className="flex flex-wrap gap-1 justify-center">
+            <span className={`inline-flex items-center gap-0.5 ${tierBg} px-1.5 py-0.5 rounded text-[8px] ${tierColor} font-bold`}>
+              {tier}
+            </span>
             <span className="inline-flex items-center gap-0.5 bg-white/6 px-1.5 py-0.5 rounded text-[8px] text-offwhite/55 max-w-full">
               <Clock className="w-2.5 h-2.5 shrink-0" />
               <span className="truncate">{candidate.bestTimeToGo}</span>

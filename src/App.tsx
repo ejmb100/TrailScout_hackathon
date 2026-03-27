@@ -37,7 +37,6 @@ import MapContainer from './components/MapContainer';
 import {
   runIntentAgent,
   runResearchAgent,
-  runValidationAgent,
   runActionAgent,
   intentToLegacyPrefs,
   isGeminiApiKeyConfigured,
@@ -52,7 +51,7 @@ import { fetchTrailsWithFallback, type TrailData } from './services/osmService';
 import { enrichTrailsWithElevation } from './services/elevationService';
 import { fetchForecastForHike, type HikeForecast } from './services/weatherService';
 import { fetchApproxIpLocation, type ApproxIpLocation } from './services/ipGeoService';
-import { scoreAndFilterTrails, calculateDistance } from './utils/trailScoring';
+import { scoreAndFilterTrails, calculateDistance, computeDeterministicMatchScore } from './utils/trailScoring';
 import { fetchOfficialTrailsInBBox, getOfficialTrailCount, getDataVintage } from './services/officialTrailService';
 import { fetchCampsitesInBBox } from './services/campsiteService';
 import { mergeTrailSources } from './services/trailMergeService';
@@ -60,11 +59,20 @@ import {
   integratePlanner,
   buildDeclinedTripPlan,
   buildMultiDayItinerary,
+  estimateEffort,
   type PlannerRecommendation,
   type PlannerScoredCandidate,
   type MultiDayItinerary,
+  type EffortEstimate,
+  type AssumptionEntry,
 } from './planner';
 import { buildTravelPlan, type TravelPlan } from './services/travelLogisticsService';
+import { fetchRidbFacilities } from './services/recreationGovService';
+import { fetchForestAlerts, type ForestAlerts } from './services/forestAlertService';
+import {
+  buildCampsiteStatuses,
+  type CampsiteStatus,
+} from './services/campsiteStatusService';
 
 // ─── Screen types ─────────────────────────────────────────────────────
 
@@ -198,6 +206,16 @@ export default function App() {
   const [plannerByTrailId, setPlannerByTrailId] = useState<Map<number, PlannerScoredCandidate> | null>(null);
   /** Coarse IP-based location for default map center (VPN may skew). */
   const [approxUserLocation, setApproxUserLocation] = useState<ApproxIpLocation | null>(null);
+  /** True while we're re-running the Action Agent for a newly selected trail. */
+  const [rebuildingPlan, setRebuildingPlan] = useState(false);
+  /** Fused campsite statuses from EDW + RIDB + fire alerts. */
+  const [campsiteStatuses, setCampsiteStatuses] = useState<CampsiteStatus[]>([]);
+  /** Active fire/closure alerts for the search area. */
+  const [forestAlerts, setForestAlerts] = useState<ForestAlerts | null>(null);
+  /** Aggregated assumptions from all pipeline stages. */
+  const [assumptionLedger, setAssumptionLedger] = useState<AssumptionEntry[]>([]);
+  /** Effort estimate for the primary/selected trail. */
+  const [effortEstimate, setEffortEstimate] = useState<EffortEstimate | null>(null);
 
   const resultsRef = useRef<HTMLDivElement>(null);
   const searchShellRef = useRef<HTMLDivElement>(null);
@@ -326,18 +344,33 @@ export default function App() {
         widenedBBox.maxLon
       );
 
-      // Fetch USFS trails and campsites in parallel (both are bbox-scoped API calls)
-      const [officialTrails] = await Promise.all([
+      // Fetch USFS trails, EDW campsites, RIDB facilities, and fire alerts in parallel
+      const [officialTrails, edwCampsites, ridbFacilities, alerts] = await Promise.all([
         fetchOfficialTrailsInBBox(
           widenedBBox.minLat, widenedBBox.minLon, widenedBBox.maxLat, widenedBBox.maxLon
         ),
         fetchCampsitesInBBox(
           widenedBBox.minLat, widenedBBox.minLon, widenedBBox.maxLat, widenedBBox.maxLon
         ),
+        fetchRidbFacilities(
+          widenedBBox.minLat, widenedBBox.minLon, widenedBBox.maxLat, widenedBBox.maxLon
+        ),
+        fetchForestAlerts(
+          widenedBBox.minLat, widenedBBox.minLon, widenedBBox.maxLat, widenedBBox.maxLon
+        ),
       ]);
       const mergedTrails = mergeTrailSources(rawTrails, officialTrails);
       setHasOfficialTrails(officialTrails.length > 0);
-      console.info(`[TrailScout] official trails in bbox: ${officialTrails.length}, merged total: ${mergedTrails.length}`);
+
+      // Build fused campsite statuses
+      const statuses = buildCampsiteStatuses(edwCampsites, ridbFacilities, alerts, new Date().toISOString());
+      setCampsiteStatuses(statuses);
+      setForestAlerts(alerts);
+      console.info(
+        `[TrailScout] official trails: ${officialTrails.length}, merged: ${mergedTrails.length}, ` +
+        `campsites: ${edwCampsites.length}, RIDB: ${ridbFacilities.length}, ` +
+        `fire alerts: ${alerts.incidents.length} incidents, ${alerts.perimeters.length} perimeters`
+      );
 
       const legacyPrefs = intentToLegacyPrefs(profile);
       const scored = scoreAndFilterTrails(mergedTrails, legacyPrefs).slice(0, isMultiDay ? 10 : 20);
@@ -398,9 +431,13 @@ export default function App() {
         : fallbackResearchCandidates(enriched)
       ).map((candidate) => {
         const trail = trailById.get(candidate.trailId);
+        const deterministicScore = trail
+          ? computeDeterministicMatchScore(trail, profile)
+          : candidate.matchScore;
         return {
           ...candidate,
           distanceKm: candidate.distanceKm ?? trail?.distanceKm,
+          matchScore: deterministicScore,
         };
       });
       setCandidates(finalCandidates);
@@ -408,11 +445,9 @@ export default function App() {
         `Found ${finalCandidates.length} strong ${isMultiDay ? 'backpacking' : 'hiking'} candidates in ${profile.estimatedRegionName}${partialResults ? ' using partial OSM data' : ''}. Top research match: ${finalCandidates[0]?.trailName || 'N/A'} (${finalCandidates[0]?.matchScore || 0}%).`
       );
 
-      // ── Agent 3: Validation ──────────────────────────────────────
+      // ── Agent 3: Validation (deterministic — LLM call removed) ──
       setAgentStage('validation');
-      const validationResults = await runValidationAgent(profile, finalCandidates);
-      const finalValidations =
-        validationResults.length > 0 ? validationResults : fallbackValidationResults(finalCandidates, profile);
+      const finalValidations = fallbackValidationResults(finalCandidates, profile);
 
       const integrated = integratePlanner(profile, forecast, trailById, finalCandidates, finalValidations, query);
       setCandidates(integrated.candidates);
@@ -436,7 +471,7 @@ export default function App() {
         `${gateNote} ${recommendedCount ? 1 : 0} primary recommendation. Ordered confidence (top): ${integrated.validations[0]?.confidenceScore ?? 0}%.`
       );
 
-      // ── Agent 4: Action ──────────────────────────────────────────
+      // ── Build itinerary BEFORE Action Agent so LLM sees deterministic data ──
       setAgentStage('action');
       const topCandidate =
         primaryId != null
@@ -446,6 +481,89 @@ export default function App() {
         integrated.validations.find((v) => v.trailId === topCandidate.trailId) ?? integrated.validations[0];
       const backupCandidate =
         integrated.candidates.find((c) => c.trailId !== topCandidate.trailId) ?? undefined;
+
+      // Build itinerary + effort estimate before LLM call
+      let preBuiltItinerary: MultiDayItinerary | null = null;
+      let effortEst: EffortEstimate | null = null;
+      if (isMultiDay && primaryId != null) {
+        const primaryTrail = trailById.get(primaryId);
+        if (primaryTrail && primaryTrail.path.length >= 2) {
+          preBuiltItinerary = buildMultiDayItinerary(primaryTrail.path, profile.tripLengthDays, primaryTrail, {
+            targetDailyKm: profile.dailyDistanceKm,
+            campsiteStatuses: statuses,
+          });
+          effortEst = estimateEffort(primaryTrail, { difficultyHint: profile.difficulty });
+          console.info('[TrailScout] multi-day itinerary (pre-action)', preBuiltItinerary);
+        }
+      } else if (primaryId != null) {
+        const primaryTrail = trailById.get(primaryId);
+        if (primaryTrail) {
+          effortEst = estimateEffort(primaryTrail, { difficultyHint: profile.difficulty });
+        }
+      }
+      setMultiDayItinerary(preBuiltItinerary);
+      setEffortEstimate(effortEst);
+
+      // ── Aggregate assumption ledger from all pipeline stages ──
+      const ledger: AssumptionEntry[] = [];
+      // From planner (safety + feasibility assumptions are in the integrated result)
+      const primaryPlanner = primaryId != null ? integrated.plannerByTrailId.get(primaryId) : null;
+      if (primaryPlanner) {
+        for (const a of primaryPlanner.assumptions) {
+          const stage = a.startsWith('[effort]') ? 'effort' as const : 'safety' as const;
+          ledger.push({ stage, text: a.replace(/^\[(effort|safety)\]\s*/, ''), severity: 'info' });
+        }
+        for (const w of primaryPlanner.feasibility.warnings) {
+          ledger.push({ stage: 'feasibility', text: w, severity: 'warning' });
+        }
+        for (const w of primaryPlanner.safety.warnings) {
+          ledger.push({ stage: 'safety', text: w, severity: 'warning' });
+        }
+        for (const a of primaryPlanner.safety.assumptions) {
+          ledger.push({ stage: 'safety', text: a, severity: 'info' });
+        }
+      }
+      // From effort estimate
+      if (effortEst) {
+        for (const a of effortEst.assumptions) {
+          const severity = a.includes('No elevation') ? 'warning' as const : 'info' as const;
+          ledger.push({ stage: 'effort', text: a.replace(/^\[(effort)\]\s*/, ''), severity });
+        }
+      }
+      // From campsite fusion
+      if (statuses.length > 0) {
+        const unverifiedCount = statuses.filter(s => s.status === 'unverified').length;
+        if (unverifiedCount > 0) {
+          ledger.push({ stage: 'campsite', text: `${unverifiedCount} campsite(s) have unverified operational status.`, severity: 'warning' });
+        }
+        const fireBlocked = statuses.filter(s => s.status === 'fire_blocked').length;
+        if (fireBlocked > 0) {
+          ledger.push({ stage: 'campsite', text: `${fireBlocked} campsite(s) blocked by active fire perimeters.`, severity: 'critical' });
+        }
+      }
+      // From weather forecast
+      if (forecast) {
+        if (forecast.precipProbMax != null && forecast.precipProbMax > 50) {
+          ledger.push({ stage: 'weather', text: `High precipitation probability (${Math.round(forecast.precipProbMax)}%) — conditions may deteriorate.`, severity: 'warning' });
+        }
+        if (forecast.tempMinC != null && forecast.tempMinC < 0) {
+          ledger.push({ stage: 'weather', text: `Sub-zero temperatures forecast (${forecast.tempMinC}°C) — winter gear needed.`, severity: 'warning' });
+        }
+      }
+      // From itinerary warnings
+      if (preBuiltItinerary) {
+        for (const w of preBuiltItinerary.warnings) {
+          ledger.push({ stage: 'campsite', text: w, severity: 'warning' });
+        }
+      }
+      // Deduplicate by text
+      const seenTexts = new Set<string>();
+      const dedupedLedger = ledger.filter(a => {
+        if (seenTexts.has(a.text)) return false;
+        seenTexts.add(a.text);
+        return true;
+      });
+      setAssumptionLedger(dedupedLedger);
 
       const plannerNoteParts: string[] = [];
       if (integrated.recommendation.tripRiskTier && integrated.recommendation.tripRiskTier !== 'standard') {
@@ -458,6 +576,21 @@ export default function App() {
         plannerNoteParts.push(integrated.recommendation.geometryDisclaimer);
       }
 
+      // Inject effort + itinerary summary so the LLM writes prose consistent with computed data
+      if (effortEst) {
+        plannerNoteParts.push(
+          `Effort estimate: ${effortEst.adjustedTimeHours} h (range ${effortEst.timeRangeHours[0]}–${effortEst.timeRangeHours[1]} h), ` +
+          `${effortEst.totalAscentM} m gain, ${effortEst.totalDescentM} m loss, max grade ${effortEst.maxGradePercent}%.`
+        );
+      }
+      if (preBuiltItinerary && preBuiltItinerary.days.length > 1) {
+        const itinSummary = preBuiltItinerary.days
+          .map(d => `Day ${d.day}: ${d.distanceKm} km${d.effortHours ? ` (~${d.effortHours} h)` : ''} — ${d.campsite ? d.campsite.name : 'no approved campsite'}`)
+          .join('; ');
+        plannerNoteParts.push(`Computed itinerary: ${preBuiltItinerary.totalKm} km over ${preBuiltItinerary.days.length} days. ${itinSummary}.`);
+      }
+
+      // ── Agent 4: Action (now receives itinerary context) ──────
       const plan =
         primaryId != null && topCandidate && topValidation
           ? await runActionAgent(
@@ -469,20 +602,6 @@ export default function App() {
             )
           : buildDeclinedTripPlan(profile, integrated.recommendation);
       setTripPlan(plan);
-
-      // Build campsite-aware itinerary for multi-day trips
-      if (isMultiDay && primaryId != null) {
-        const primaryTrail = trailById.get(primaryId);
-        if (primaryTrail && primaryTrail.path.length >= 2) {
-          const itinerary = buildMultiDayItinerary(primaryTrail.path, profile.tripLengthDays, primaryTrail, {
-            targetDailyKm: profile.dailyDistanceKm,
-          });
-          setMultiDayItinerary(itinerary);
-          console.info('[TrailScout] multi-day itinerary', itinerary);
-        }
-      } else {
-        setMultiDayItinerary(null);
-      }
 
       // Build travel logistics (airport + ground transport recommendations)
       const trailCenter = {
@@ -527,6 +646,90 @@ export default function App() {
     return trails.find(t => t.id === candidate.trailId) || trails[0];
   };
 
+  // ─── Rebuild plan + itinerary for a newly selected trail ──────────
+
+  const rebuildPlanForTrail = async (idx: number) => {
+    const candidate = candidates[idx];
+    if (!candidate || !intentProfile || !plannerRecommendation) return;
+
+    const validation = validations.find(v => v.trailId === candidate.trailId) ?? validations[0];
+    const trail = findTrailForCandidate(candidate);
+    if (!validation || !trail) return;
+
+    setRebuildingPlan(true);
+    try {
+      const backupCandidate = candidates.find(c => c.trailId !== candidate.trailId);
+      const isMultiDay = intentProfile.tripType === 'multi_day';
+
+      // Build itinerary + effort BEFORE action agent
+      let rebuildItinerary: MultiDayItinerary | null = null;
+      let rebuildEffort: EffortEstimate | null = null;
+      if (isMultiDay && trail.path.length >= 2) {
+        rebuildItinerary = buildMultiDayItinerary(trail.path, intentProfile.tripLengthDays, trail, {
+          targetDailyKm: intentProfile.dailyDistanceKm,
+          campsiteStatuses,
+        });
+        rebuildEffort = estimateEffort(trail, { difficultyHint: intentProfile.difficulty });
+      } else {
+        rebuildEffort = estimateEffort(trail, { difficultyHint: intentProfile.difficulty });
+      }
+      setMultiDayItinerary(rebuildItinerary);
+      setEffortEstimate(rebuildEffort);
+
+      const plannerNoteParts: string[] = [];
+      if (plannerRecommendation.tripRiskTier && plannerRecommendation.tripRiskTier !== 'standard') {
+        plannerNoteParts.push(`Trip risk tier: ${plannerRecommendation.tripRiskTier}`);
+      }
+      if (plannerRecommendation.criticalWarnings.length > 0) {
+        plannerNoteParts.push(`Warnings: ${plannerRecommendation.criticalWarnings.slice(0, 3).join(' | ')}`);
+      }
+      if (plannerRecommendation.geometryDisclaimer) {
+        plannerNoteParts.push(plannerRecommendation.geometryDisclaimer);
+      }
+      if (rebuildEffort) {
+        plannerNoteParts.push(
+          `Effort estimate: ${rebuildEffort.adjustedTimeHours} h (range ${rebuildEffort.timeRangeHours[0]}–${rebuildEffort.timeRangeHours[1]} h), ` +
+          `${rebuildEffort.totalAscentM} m gain, ${rebuildEffort.totalDescentM} m loss, max grade ${rebuildEffort.maxGradePercent}%.`
+        );
+      }
+      if (rebuildItinerary && rebuildItinerary.days.length > 1) {
+        const itinSummary = rebuildItinerary.days
+          .map(d => `Day ${d.day}: ${d.distanceKm} km${d.effortHours ? ` (~${d.effortHours} h)` : ''} — ${d.campsite ? d.campsite.name : 'no approved campsite'}`)
+          .join('; ');
+        plannerNoteParts.push(`Computed itinerary: ${rebuildItinerary.totalKm} km over ${rebuildItinerary.days.length} days. ${itinSummary}.`);
+      }
+
+      const plan = await runActionAgent(
+        intentProfile,
+        candidate,
+        validation,
+        backupCandidate,
+        plannerNoteParts.join('\n')
+      );
+      setTripPlan(plan);
+
+      // Travel plan uses the trail's centroid
+      const trailCenter = trail.path.length > 0
+        ? trail.path.reduce((acc, p) => ({ lat: acc.lat + p.lat, lng: acc.lng + p.lng }), { lat: 0, lng: 0 })
+        : { lat: (intentProfile.bbox.minLat + intentProfile.bbox.maxLat) / 2, lng: (intentProfile.bbox.minLon + intentProfile.bbox.maxLon) / 2 };
+      if (trail.path.length > 0) {
+        trailCenter.lat /= trail.path.length;
+        trailCenter.lng /= trail.path.length;
+      }
+      const travel = buildTravelPlan(
+        approxUserLocation ? { lat: approxUserLocation.lat, lng: approxUserLocation.lng, city: approxUserLocation.city, region: approxUserLocation.region } : null,
+        trailCenter.lat,
+        trailCenter.lng,
+        intentProfile.estimatedRegionName
+      );
+      setTravelPlan(travel);
+    } catch (err) {
+      console.error('[TrailScout] failed to rebuild plan for selected trail', err);
+    } finally {
+      setRebuildingPlan(false);
+    }
+  };
+
   // ─── Reset to home ────────────────────────────────────────────────
   
   const goHome = () => {
@@ -536,6 +739,10 @@ export default function App() {
     setPlannerRecommendation(null);
     setPlannerByTrailId(null);
     setHasOfficialTrails(false);
+    setCampsiteStatuses([]);
+    setForestAlerts(null);
+    setAssumptionLedger([]);
+    setEffortEstimate(null);
   };
 
   // ═══════════════════════════════════════════════════════════════════
@@ -1033,6 +1240,13 @@ export default function App() {
                       ? { lat: approxUserLocation.lat, lng: approxUserLocation.lng }
                       : undefined
                   }
+                  poiMarkers={campsiteStatuses.map(cs => ({
+                    lat: cs.campsite.lat,
+                    lng: cs.campsite.lng,
+                    name: cs.campsite.name,
+                    type: cs.campsite.siteType === 'trailhead' ? 'trailhead' as const : 'campsite' as const,
+                    status: cs.status,
+                  }))}
                 />
               </motion.div>
             )}
@@ -1055,8 +1269,10 @@ export default function App() {
                     isSelected={selectedTrailIndex === idx}
                     targetMaxKm={intentProfile?.maxDistanceKm}
                     onSelect={() => {
-                      setSelectedTrailIndex(idx);
-                      // Show the plan for the selected trail
+                      if (idx !== selectedTrailIndex) {
+                        setSelectedTrailIndex(idx);
+                        rebuildPlanForTrail(idx);
+                      }
                     }}
                   />
                 );
@@ -1072,20 +1288,34 @@ export default function App() {
                 className="text-center"
               >
                 <button
+                  disabled={rebuildingPlan}
                   onClick={() => {
-                    setScreen('plan');
-                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                    if (!rebuildingPlan) {
+                      setScreen('plan');
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }
                   }}
-                  className="gradient-orange text-navy px-8 py-4 rounded-2xl font-bold text-lg hover:shadow-lg hover:shadow-orange/20 transition-all inline-flex items-center gap-3 glow-orange"
+                  className={`gradient-orange text-navy px-8 py-4 rounded-2xl font-bold text-lg transition-all inline-flex items-center gap-3 glow-orange ${rebuildingPlan ? 'opacity-60 cursor-wait' : 'hover:shadow-lg hover:shadow-orange/20'}`}
                 >
-                  <Zap className="w-5 h-5" />
-                  {tripPlan.tripType === 'multi_day' ? 'View Full Backpacking Plan' : 'View Full Trip Plan'}
-                  <ArrowRight className="w-5 h-5" />
+                  {rebuildingPlan ? (
+                    <>
+                      <Sparkles className="w-5 h-5 animate-spin" />
+                      Rebuilding Plan…
+                    </>
+                  ) : (
+                    <>
+                      <Zap className="w-5 h-5" />
+                      {tripPlan.tripType === 'multi_day' ? 'View Full Backpacking Plan' : 'View Full Trip Plan'}
+                      <ArrowRight className="w-5 h-5" />
+                    </>
+                  )}
                 </button>
                 <p className="text-offwhite/20 text-xs mt-3">
-                  {tripPlan.tripType === 'multi_day'
-                    ? 'Includes day-by-day itinerary, backpacking checklist, logistics, and backup option'
-                    : 'Includes departure time, packing list, calendar event, and backup option'}
+                  {rebuildingPlan
+                    ? 'Updating plan for the selected trail…'
+                    : tripPlan.tripType === 'multi_day'
+                      ? 'Includes day-by-day itinerary, backpacking checklist, logistics, and backup option'
+                      : 'Includes departure time, packing list, calendar event, and backup option'}
                 </p>
               </motion.div>
             )}
@@ -1128,6 +1358,10 @@ export default function App() {
                   plannerRecommendation={plannerRecommendation ?? undefined}
                   multiDayItinerary={multiDayItinerary ?? undefined}
                   travelPlan={travelPlan ?? undefined}
+                  campsiteStatuses={campsiteStatuses}
+                  forestAlerts={forestAlerts ?? undefined}
+                  assumptions={assumptionLedger}
+                  effortEstimate={effortEstimate ?? undefined}
                   onBack={() => {
                     setScreen('results');
                     window.scrollTo({ top: 0, behavior: 'smooth' });

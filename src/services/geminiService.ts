@@ -573,8 +573,8 @@ For each trail (up to the top 5 best matches), produce a research analysis:
 {
   "trailId": number,
   "trailName": "string",
-  "matchScore": number (0-100, how well it matches the intent),
-  "matchExplanation": "1-2 sentences explaining why this trail fits the request",
+  "matchScore": number (0-100, how well it matches the intent — NOTE: this will be overridden by a deterministic score downstream, so focus your effort on matchExplanation quality instead),
+  "matchExplanation": "2-3 sentences explaining why this trail fits or does not fit the request. Be specific about distance match, terrain character, scenery, and any concerns. This explanation is the primary value you provide — the scoring is handled deterministically.",
   "estimatedDriveTime": "estimate from the region center",
   "weatherForecast": "realistic weather estimate for ${intent.date} in ${intent.location}",
   "crowdLevel": "low" | "moderate" | "high" (estimate based on trail type and popularity),

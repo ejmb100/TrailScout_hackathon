@@ -6,6 +6,13 @@ export type TripRiskTier = 'standard' | 'elevated' | 'high' | 'extreme';
 
 export type PlannerRecommendationStatus = 'recommended' | 'conditional' | 'none';
 
+/** Shared assumption entry emitted by any pipeline stage. */
+export interface AssumptionEntry {
+  stage: 'intent' | 'effort' | 'feasibility' | 'safety' | 'campsite' | 'weather' | 'scoring';
+  text: string;
+  severity: 'info' | 'warning' | 'critical';
+}
+
 export interface TrailFeasibilityResult {
   eligible: boolean;
   blockingReasons: string[];

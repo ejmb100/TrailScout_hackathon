@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { TrailData } from '../services/osmService';
+import type { CampsiteStatus, CampsiteOperationalStatus } from '../services/campsiteStatusService';
 
 declare global {
   interface Window {
@@ -63,24 +64,66 @@ function splitAtGaps(path: { lat: number; lng: number }[]): { lat: number; lng: 
   return subPaths;
 }
 
+export interface MapMarkerData {
+  lat: number;
+  lng: number;
+  name: string;
+  type: 'campsite' | 'trailhead';
+  status?: CampsiteOperationalStatus;
+}
+
 interface MapContainerProps {
   trails: TrailData[];
   center?: { lat: number; lng: number };
   zoom?: number;
   focusedTrailId?: number | null;
+  /** Optional campsite/trailhead markers with status-based coloring. */
+  poiMarkers?: MapMarkerData[];
+}
+
+function poiMarkerColor(marker: MapMarkerData): string {
+  if (marker.type === 'trailhead') return '#A78BFA'; // purple
+  if (!marker.status) return '#6B7280'; // gray
+  switch (marker.status) {
+    case 'confirmed': return '#34D399'; // green
+    case 'walk_in': return '#60A5FA'; // blue
+    case 'seasonal_closure': case 'unverified': return '#FBBF24'; // amber
+    case 'closed': return '#EF4444'; // red
+    case 'fire_blocked': return '#DC2626'; // dark red
+    default: return '#6B7280';
+  }
+}
+
+function LegendRow({ symbol, color, label }: { symbol: 'arrow' | 'circle'; color: string; label: string }) {
+  return (
+    <div className="flex items-center gap-1.5">
+      {symbol === 'arrow' ? (
+        <svg width="10" height="10" viewBox="0 0 10 10" className="shrink-0">
+          <polygon points="5,0 10,10 0,10" fill={color} />
+        </svg>
+      ) : (
+        <svg width="10" height="10" viewBox="0 0 10 10" className="shrink-0">
+          <circle cx="5" cy="5" r="4.5" fill={color} />
+        </svg>
+      )}
+      <span className="text-[9px] text-offwhite/70">{label}</span>
+    </div>
+  );
 }
 
 const MapContainer: React.FC<MapContainerProps> = ({ 
   trails, 
   center: centerProp,
   zoom = 12,
-  focusedTrailId = null
+  focusedTrailId = null,
+  poiMarkers = [],
 }) => {
   const center = centerProp ?? DEFAULT_CENTER;
   const mapRef = useRef<HTMLDivElement>(null);
   const googleMap = useRef<google.maps.Map | null>(null);
   const polylines = useRef<google.maps.Polyline[]>([]);
   const markers = useRef<google.maps.Marker[]>([]);
+  const poiMarkersRef = useRef<google.maps.Marker[]>([]);
   const prevTrailsCount = useRef<number>(0);
   
   const [mapType, setMapType] = useState<'dark' | 'terrain' | 'satellite'>(INITIAL_MAP_TYPE);
@@ -151,6 +194,9 @@ const MapContainer: React.FC<MapContainerProps> = ({
         markers.current.forEach(m => {
           try { m.setMap(null); } catch (e) {}
         });
+        poiMarkersRef.current.forEach(m => {
+          try { m.setMap(null); } catch (e) {}
+        });
       };
     }, []);
 
@@ -196,6 +242,37 @@ const MapContainer: React.FC<MapContainerProps> = ({
         renderTrails();
       }
     }, [trails, focusedTrailId]);
+
+    useEffect(() => {
+      if (!googleMap.current) return;
+      // Clear old POI markers
+      poiMarkersRef.current.forEach(m => { try { m.setMap(null); } catch {} });
+      poiMarkersRef.current = [];
+
+      if (!showTrails) return;
+
+      for (const poi of poiMarkers) {
+        const color = poiMarkerColor(poi);
+        const isTrailhead = poi.type === 'trailhead';
+        const marker = new google.maps.Marker({
+          position: { lat: poi.lat, lng: poi.lng },
+          map: googleMap.current,
+          title: `${poi.name}${poi.status ? ` (${poi.status})` : ''}`,
+          icon: {
+            path: isTrailhead
+              ? google.maps.SymbolPath.BACKWARD_CLOSED_ARROW
+              : google.maps.SymbolPath.CIRCLE,
+            scale: isTrailhead ? 5 : 6,
+            fillColor: color,
+            fillOpacity: 0.85,
+            strokeWeight: 1.5,
+            strokeColor: '#FFFFFF',
+          },
+          zIndex: isTrailhead ? 10 : 20,
+        });
+        poiMarkersRef.current.push(marker);
+      }
+    }, [poiMarkers, showTrails]);
 
     useEffect(() => {
       const map = showTrails ? googleMap.current : null;
@@ -326,6 +403,18 @@ const MapContainer: React.FC<MapContainerProps> = ({
         <div className="bg-navy/80 backdrop-blur-md px-4 py-2 rounded-full border border-white/10 text-[10px] font-bold text-teal uppercase tracking-widest shadow-xl pointer-events-auto">
           {trails.length} Trails Loaded via OSM
         </div>
+        {poiMarkers.length > 0 && (
+          <div className="bg-navy/80 backdrop-blur-md px-3 py-2 rounded-xl border border-white/10 shadow-xl pointer-events-auto">
+            <div className="text-[8px] text-offwhite/40 uppercase tracking-widest font-bold mb-1.5">Legend</div>
+            <div className="flex flex-col gap-1">
+              <LegendRow symbol="arrow" color="#A855F7" label="Trailhead" />
+              <LegendRow symbol="circle" color="#22C55E" label="Campsite (confirmed)" />
+              <LegendRow symbol="circle" color="#3B82F6" label="Campsite (walk-in)" />
+              <LegendRow symbol="circle" color="#FBBF24" label="Campsite (unverified)" />
+              <LegendRow symbol="circle" color="#EF4444" label="Campsite (closed / fire)" />
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Floating Map Base Controls */}
