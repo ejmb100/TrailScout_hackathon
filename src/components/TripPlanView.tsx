@@ -197,7 +197,8 @@ END:VCALENDAR`;
       md += `### Itinerary (${multiDayItinerary.totalKm} km total, ${multiDayItinerary.campsitesFound} campsites)\n`;
       for (const seg of multiDayItinerary.days) {
         const camp = seg.campsite && seg.day < multiDayItinerary.days.length ? ` → Camp: ${seg.campsite.name}` : '';
-        md += `- **Day ${seg.day}:** ${seg.distanceKm} km (km ${seg.startKm}–${seg.endKm}) — ${seg.notes}${camp}\n`;
+        const source = seg.campsiteRecommendation?.source ? ` Source: ${seg.campsiteRecommendation.source}.` : '';
+        md += `- **Day ${seg.day}:** ${seg.distanceKm} km (km ${seg.startKm}–${seg.endKm}) — ${seg.notes}${source}${camp}\n`;
       }
       md += `\n`;
     } else if (dailyPlan.length > 0) {
@@ -486,7 +487,9 @@ END:VCALENDAR`;
                               )}
                               {!seg.approvedSite && !isLast && (
                                 <span className="block mt-1 text-[11px] text-red/60 font-semibold flex items-center gap-1">
-                                  <AlertTriangle className="w-3 h-3 inline" /> No approved campsite — verify regulations before camping here
+                                  <AlertTriangle className="w-3 h-3 inline" /> {seg.campsiteRecommendation?.officialCampingFacility
+                                    ? 'Official campsite data found — verify current availability before camping here'
+                                    : 'No confirmed public-data campsite for this segment'}
                                 </span>
                               )}
                             </span>
