@@ -4,6 +4,8 @@ import type { TrailData } from '../services/osmService';
 import { assessFeasibility } from './feasibility';
 import { assessSafety } from './safety';
 import { integratePlanner } from './rank';
+import { fetchCampsitesInBBox } from '../services/campsiteService';
+import { buildMultiDayItinerary } from './itinerary';
 
 function baseIntent(over: Partial<IntentProfile> = {}): IntentProfile {
   return {
@@ -122,6 +124,98 @@ describe('assessSafety', () => {
     const trail = shortTrail({ tags: { ...shortTrail().tags, sac_scale: 't3' } });
     const r = assessSafety(intent, trail, null);
     expect(r.blockingFindings.some((b) => b.includes('kid'))).toBe(true);
+  });
+});
+
+describe('buildMultiDayItinerary', () => {
+  it('does not invent overnight campsites when no public campsite data is available near a segment', () => {
+    const trail: TrailData = {
+      id: 200,
+      name: 'Long Trail With No Campsite Data',
+      path: [
+        { lat: 37.0, lng: -107.0 },
+        { lat: 37.18, lng: -107.0 },
+        { lat: 37.36, lng: -107.0 },
+      ],
+      tags: { trailscout_source: 'usfs_nfs' },
+    };
+
+    const itinerary = buildMultiDayItinerary(trail.path, 2, trail, { targetDailyKm: 20, campsiteStatuses: [] });
+    const overnight = itinerary.days[0];
+
+    expect(overnight.campsite).toBeNull();
+    expect(overnight.approvedSite).toBe(false);
+    expect(overnight.notes).toContain('No confirmed legal campsite or campground was found near this segment based on available public data.');
+    expect(overnight.campsiteRecommendation).toMatchObject({
+      type: 'unknown_unverified',
+      publicDataBacked: false,
+      officialCampingFacility: false,
+      currentAvailabilityConfirmed: false,
+      permissionConfirmed: false,
+      permissionStatus: 'unknown',
+      confidenceLevel: 'unknown',
+    });
+  });
+
+  it('treats EDW-only camping facilities as public-data-backed but not currently confirmed', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => ({
+      ok: true,
+      json: async () => ({
+        features: [{
+          attributes: {
+            OBJECTID: 99001,
+            SITE_NAME: 'EDW Only Test Campground',
+            SITE_TYPE: 'CAMPGROUND',
+            ACTIVITY_TYPE_LIST: 'CAMPING',
+            FEE_CHARGED: 'N',
+            WATER_AVAILABILITY: '',
+            TOTAL_CAPACITY: 10,
+            LATITUDE: 39.18,
+            LONGITUDE: -106.0,
+            PACK_IN_OUT: 'N',
+            OPEN_SEASON: '',
+            PERMIT_INFORMATION: '',
+            RESTRICTIONS: '',
+          },
+        }],
+      }),
+    })) as unknown as typeof fetch;
+
+    try {
+      await fetchCampsitesInBBox(39.0, -106.1, 39.4, -105.9);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    const trail: TrailData = {
+      id: 201,
+      name: 'Trail With EDW Only Campground',
+      path: [
+        { lat: 39.0, lng: -106.0 },
+        { lat: 39.18, lng: -106.0 },
+        { lat: 39.36, lng: -106.0 },
+      ],
+      tags: { trailscout_source: 'usfs_nfs' },
+    };
+
+    const itinerary = buildMultiDayItinerary(trail.path, 2, trail, { targetDailyKm: 20, campsiteStatuses: [] });
+    const overnight = itinerary.days[0];
+
+    expect(overnight.campsite?.name).toBe('EDW Only Test Campground');
+    expect(overnight.approvedSite).toBe(false);
+    expect(overnight.notes).toContain('current availability must be verified');
+    expect(overnight.campsiteRecommendation).toMatchObject({
+      type: 'official_camping_facility_unverified',
+      publicDataBacked: true,
+      officialCampingFacility: true,
+      currentAvailabilityConfirmed: false,
+      permissionConfirmed: false,
+      permissionStatus: 'official_facility_unverified',
+      confidenceLevel: 'low',
+      source: 'USFS EDW',
+      provider: 'USFS EDW',
+    });
   });
 });
 

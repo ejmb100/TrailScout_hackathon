@@ -585,7 +585,7 @@ export default function App() {
       }
       if (preBuiltItinerary && preBuiltItinerary.days.length > 1) {
         const itinSummary = preBuiltItinerary.days
-          .map(d => `Day ${d.day}: ${d.distanceKm} km${d.effortHours ? ` (~${d.effortHours} h)` : ''} — ${d.campsite ? d.campsite.name : 'no approved campsite'}`)
+          .map(d => `Day ${d.day}: ${d.distanceKm} km${d.effortHours ? ` (~${d.effortHours} h)` : ''} — ${d.campsite ? d.campsite.name : 'no confirmed public-data campsite'}`)
           .join('; ');
         plannerNoteParts.push(`Computed itinerary: ${preBuiltItinerary.totalKm} km over ${preBuiltItinerary.days.length} days. ${itinSummary}.`);
       }
@@ -694,7 +694,7 @@ export default function App() {
       }
       if (rebuildItinerary && rebuildItinerary.days.length > 1) {
         const itinSummary = rebuildItinerary.days
-          .map(d => `Day ${d.day}: ${d.distanceKm} km${d.effortHours ? ` (~${d.effortHours} h)` : ''} — ${d.campsite ? d.campsite.name : 'no approved campsite'}`)
+          .map(d => `Day ${d.day}: ${d.distanceKm} km${d.effortHours ? ` (~${d.effortHours} h)` : ''} — ${d.campsite ? d.campsite.name : 'no confirmed public-data campsite'}`)
           .join('; ');
         plannerNoteParts.push(`Computed itinerary: ${rebuildItinerary.totalKm} km over ${rebuildItinerary.days.length} days. ${itinSummary}.`);
       }

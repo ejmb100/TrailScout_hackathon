@@ -1,11 +1,11 @@
 /**
  * Multi-day itinerary builder: splits a trail into daily segments
- * ending at the nearest USFS-approved campsite to the target daily distance.
+ * ending at the nearest public-data-backed camping facility when one exists.
  *
- * Only designated campgrounds and camping areas are used as overnight stops.
- * When no approved site is reachable within a reasonable stretch, the day is
- * flagged as requiring the hiker to verify local dispersed-camping regulations
- * before proceeding.
+ * Only official campgrounds and camping areas are used as overnight stops.
+ * Trailheads and distance-only route progress are never treated as camping
+ * recommendations. When no public campsite/campground data supports a stop,
+ * the segment gets an explicit unknown/unverified fallback instead.
  *
  * If fused CampsiteStatus data is available, blocked sites (fire closures,
  * facility closures) are excluded from overnight candidate selection.
@@ -25,6 +25,34 @@ import {
 } from '../services/campsiteStatusService';
 import { estimateEffort } from './effort';
 
+export type CampsiteRecommendationType =
+  | 'confirmed_campground'
+  | 'official_camping_facility_unverified'
+  | 'unknown_unverified';
+
+export type CampsitePermissionStatus = 'confirmed' | 'official_facility_unverified' | 'unknown';
+export type CampsiteConfidenceLevel = 'high' | 'medium' | 'low' | 'unknown';
+
+export interface CampsiteRecommendationMetadata {
+  type: CampsiteRecommendationType;
+  source: string | null;
+  provider: string | null;
+  facilityName: string | null;
+  distanceFromRouteKm: number | null;
+  confidenceLevel: CampsiteConfidenceLevel;
+  /** True when a public/bundled source identifies this stop as a camping facility. */
+  publicDataBacked: boolean;
+  /** True when the source record is an official campground or camping-area facility, not a trailhead or distance-only stop. */
+  officialCampingFacility: boolean;
+  /** True only when current operational availability is confirmed by an availability/status source such as RIDB. */
+  currentAvailabilityConfirmed: boolean;
+  /** Back-compat alias for currentAvailabilityConfirmed; do not interpret as merely "official facility exists". */
+  permissionConfirmed: boolean;
+  permissionStatus: CampsitePermissionStatus;
+  status: CampsiteOperationalStatus | 'not_found';
+  fallbackReason?: string;
+}
+
 export interface DaySegment {
   day: number;
   startKm: number;
@@ -33,8 +61,10 @@ export interface DaySegment {
   /** Effort-adjusted hiking time for this segment (hours), using Tobler's function when elevation data is available. */
   effortHours?: number;
   campsite: TrailCampsite | null;
-  /** Whether camping at an approved site is confirmed for this night. */
+  /** Whether current overnight availability is confirmed by a status/availability source. */
   approvedSite: boolean;
+  /** Public-data-backed metadata for any campsite recommendation or fallback. */
+  campsiteRecommendation: CampsiteRecommendationMetadata;
   /** Whether this segment passes through designated wilderness. */
   wilderness: boolean;
   notes: string;
@@ -62,14 +92,86 @@ export interface MultiDayItinerary {
   exitTrailhead?: { name: string; km: number };
 }
 
-/** Max km we'll stretch a day beyond the ideal window to reach an approved site. */
+/** Max km we'll stretch a day beyond the ideal window to reach a public-data-backed camping facility. */
 const STRETCH_LIMIT_KM = 8;
 
-function buildCampsiteNotes(site: TrailCampsite): string {
+const NO_CONFIRMED_CAMPSITE_MESSAGE =
+  'No confirmed legal campsite or campground was found near this segment based on available public data.';
+
+function buildFallbackRecommendation(reason: string): CampsiteRecommendationMetadata {
+  return {
+    type: 'unknown_unverified',
+    source: null,
+    provider: null,
+    facilityName: null,
+    distanceFromRouteKm: null,
+    confidenceLevel: 'unknown',
+    publicDataBacked: false,
+    officialCampingFacility: false,
+    currentAvailabilityConfirmed: false,
+    permissionConfirmed: false,
+    permissionStatus: 'unknown',
+    status: 'not_found',
+    fallbackReason: reason,
+  };
+}
+
+function buildCampsiteRecommendation(
+  site: TrailCampsite,
+  status?: TrailCampsiteStatus,
+): CampsiteRecommendationMetadata {
+  const currentAvailabilityConfirmed = !!status?.ridbMatch && status.status === 'confirmed';
+  const hasRidbWalkIn = !!status?.ridbMatch && status.status === 'walk_in';
+  const sources = status?.sources.map(s => s.name).join(' + ') || 'USFS EDW';
+  const provider = status?.ridbMatch ? 'Recreation.gov/RIDB + USFS EDW' : 'USFS EDW';
+  const permissionStatus: CampsitePermissionStatus = currentAvailabilityConfirmed
+    ? 'confirmed'
+    : 'official_facility_unverified';
+
+  return {
+    type: currentAvailabilityConfirmed ? 'confirmed_campground' : 'official_camping_facility_unverified',
+    source: sources,
+    provider,
+    facilityName: status?.ridbMatch?.name || site.name,
+    distanceFromRouteKm: site.offsetKm,
+    confidenceLevel: currentAvailabilityConfirmed ? 'high' : hasRidbWalkIn ? 'medium' : 'low',
+    publicDataBacked: true,
+    officialCampingFacility: true,
+    currentAvailabilityConfirmed,
+    permissionConfirmed: currentAvailabilityConfirmed,
+    permissionStatus,
+    status: status?.status ?? 'unverified',
+  };
+}
+
+function isOfficialCampingSite(site: TrailCampsite): boolean {
+  return site.siteType === 'campground' || site.siteType === 'camping_area';
+}
+
+function isEligibleOvernightSite(site: TrailCampsite, status?: TrailCampsiteStatus): boolean {
+  if (!isOfficialCampingSite(site)) return false;
+  if (status && isBlocked(status.status)) return false;
+  return true;
+}
+
+function recommendationLabel(meta: CampsiteRecommendationMetadata): string {
+  switch (meta.type) {
+    case 'confirmed_campground': return 'Confirmed campground/campsite';
+    case 'official_camping_facility_unverified': return 'Official camping facility (current availability unverified)';
+    case 'unknown_unverified': return 'Unknown/unverified camping';
+  }
+}
+
+function buildCampsiteNotes(site: TrailCampsite, recommendation: CampsiteRecommendationMetadata): string {
   const parts: string[] = [];
 
-  const typeLabel = site.siteType === 'campground' ? 'campground' : 'designated dispersed area';
-  parts.push(`Camp at ${site.name} (${typeLabel}).`);
+  const typeLabel = site.siteType === 'campground' ? 'campground' : 'official camping area';
+  parts.push(`${recommendationLabel(recommendation)}: ${site.name} (${typeLabel}).`);
+  if (recommendation.provider) parts.push(`Source: ${recommendation.provider}.`);
+  if (!recommendation.currentAvailabilityConfirmed && recommendation.officialCampingFacility) {
+    parts.push('Official public data identifies this as a camping facility, but current availability must be verified with the managing agency before relying on it.');
+  }
+  if (recommendation.distanceFromRouteKm != null) parts.push(`~${recommendation.distanceFromRouteKm.toFixed(1)} km from mapped route.`);
 
   if (site.water === true) parts.push('Water available.');
   else if (site.water === false) parts.push('No water — carry enough.');
@@ -103,7 +205,9 @@ export function buildMultiDayItinerary(
       totalKm,
       days: [{
         day: 1, startKm: 0, endKm: totalKm, distanceKm: totalKm,
-        campsite: null, approvedSite: false, wilderness: !!wildernessName,
+        campsite: null, approvedSite: false,
+        campsiteRecommendation: buildFallbackRecommendation('Single-day itinerary; no overnight campsite is required or recommended.'),
+        wilderness: !!wildernessName,
         notes: 'Single day or trail too short for segmenting.',
       }],
       campsitesFound: 0,
@@ -114,7 +218,7 @@ export function buildMultiDayItinerary(
   }
 
   const campsites = getCampsitesAlongTrail(path, { maxOffsetKm: 3.0 });
-  const campables = campsites.filter(c => c.siteType === 'campground' || c.siteType === 'camping_area');
+  const campables = campsites.filter(isOfficialCampingSite);
 
   // Identify trailheads along the route
   const allTrailheads = campsites
@@ -134,17 +238,18 @@ export function buildMultiDayItinerary(
     for (const s of enriched) statusMap.set(s.campsite.id, s);
   }
 
-  // Filter out hard-blocked sites (fire, closure)
-  const eligibleCampables = hasStatusData
-    ? campables.filter(c => {
-        const st = statusMap.get(c.id);
-        if (st && isBlocked(st.status)) {
-          warnings.push(`${c.name}: ${statusLabel(st.status)} — excluded from overnight selection.`);
-          return false;
-        }
-        return true;
-      })
-    : campables;
+  // Filter out non-camping records and hard-blocked sites (fire, closure).
+  // Trailheads remain available only as entry/exit/navigation context, never as overnight stops.
+  const eligibleCampables = campables.filter(c => {
+    const st = statusMap.get(c.id);
+    if (!isEligibleOvernightSite(c, st)) {
+      if (st && isBlocked(st.status)) {
+        warnings.push(`${c.name}: ${statusLabel(st.status)} — excluded from overnight selection.`);
+      }
+      return false;
+    }
+    return true;
+  });
 
   // Compute total effort for proportional distribution across day segments
   const effortEst = trail ? estimateEffort(trail) : null;
@@ -189,8 +294,9 @@ export function buildMultiDayItinerary(
         effortHours: totalEffortH != null && totalKm > 0
           ? Math.round((segDist / totalKm) * totalEffortH * 10) / 10
           : undefined,
-        campsite: trailheadEnd ?? null,
-        approvedSite: true,
+        campsite: null,
+        approvedSite: false,
+        campsiteRecommendation: buildFallbackRecommendation('Final trail exit segment; no overnight campsite is required or recommended.'),
         wilderness: isWilderness,
         notes: lastNotes,
         trailheads: lastDayTrailheads.length > 0 ? lastDayTrailheads : undefined,
@@ -243,31 +349,38 @@ export function buildMultiDayItinerary(
 
     let notes: string;
     let approvedSite: boolean;
+    let campsiteRecommendation: CampsiteRecommendationMetadata;
     let campsiteStatus: CampsiteOperationalStatus | undefined;
     let campsiteConfidence: number | undefined;
     let campsiteSources: string[] | undefined;
 
     if (chosen) {
-      notes = buildCampsiteNotes(chosen);
-      approvedSite = true;
       const st = statusMap.get(chosen.id);
+      campsiteRecommendation = buildCampsiteRecommendation(chosen, st);
+      notes = buildCampsiteNotes(chosen, campsiteRecommendation);
+      approvedSite = campsiteRecommendation.permissionConfirmed;
       if (st) {
         campsiteStatus = st.status;
         campsiteConfidence = st.confidence;
         campsiteSources = st.sources.map(s => s.name);
         if (isConditional(st.status)) {
-          notes += ` Status: ${statusLabel(st.status)} — verify before relying on this site.`;
-          warnings.push(`Day ${day}: ${chosen.name} is ${statusLabel(st.status).toLowerCase()} — confirm availability.`);
+          notes += ` Status: ${statusLabel(st.status)} — verify current availability before relying on this site.`;
+          warnings.push(`Day ${day}: ${chosen.name} is ${statusLabel(st.status).toLowerCase()} — confirm current availability.`);
         }
+      } else {
+        campsiteSources = [campsiteRecommendation.source ?? 'USFS EDW'];
+        notes += ' Operational status is not independently verified; confirm current availability before relying on this site.';
+        warnings.push(`Day ${day}: ${chosen.name} appears in official public campsite data, but current operational status is unverified.`);
       }
     } else {
+      const fallbackReason = `${NO_CONFIRMED_CAMPSITE_MESSAGE} The planner will not infer camping from route distance or progress.`;
+      campsiteRecommendation = buildFallbackRecommendation(fallbackReason);
       notes =
-        `No USFS-approved campsite found within range of km ${endKm.toFixed(1)}. ` +
-        `Do NOT camp here without first confirming that dispersed camping is permitted at this location. ` +
-        `Check with the local ranger district for closures, fire bans, and camping regulations.`;
+        `${NO_CONFIRMED_CAMPSITE_MESSAGE} ` +
+        `Do NOT camp here unless you independently confirm that camping is legal and available with the managing public agency.`;
       approvedSite = false;
       warnings.push(
-        `Day ${day}: no approved campsite reachable. You must verify dispersed camping is allowed before overnighting here.`
+        `Day ${day}: ${NO_CONFIRMED_CAMPSITE_MESSAGE}`
       );
     }
 
@@ -296,6 +409,7 @@ export function buildMultiDayItinerary(
         : undefined,
       campsite: chosen,
       approvedSite,
+      campsiteRecommendation,
       wilderness: isWilderness,
       notes,
       campsiteStatus,
