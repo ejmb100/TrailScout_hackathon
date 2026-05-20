@@ -94,6 +94,26 @@ describe('assessFeasibility', () => {
 });
 
 describe('assessSafety', () => {
+  it('adds seasonal snow/ice warnings for Colorado alpine routes when the user asks for a winter month', () => {
+    const intent = baseIntent({
+      location: 'Colorado',
+      date: 'February',
+      difficulty: 'moderate',
+      tripType: 'multi_day',
+    });
+    const trail = shortTrail({
+      tags: {
+        ...shortTrail().tags,
+        cotrex_max_elevation_m: '3350',
+        cotrex_min_elevation_m: '2850',
+      },
+    });
+    const r = assessSafety(intent, trail, null, 'five day hike in Colorado in February');
+
+    expect(r.tier).toBe('high');
+    expect(r.warnings.join(' ')).toMatch(/snow|ice|microspikes|crampons/i);
+  });
+
   it('blocks fair-weather intent when precipitation probability is high', () => {
     const intent = baseIntent({ weatherTolerance: 'fair_only' });
     const trail = shortTrail({ tags: { ...shortTrail().tags, sac_scale: 'hiking' } });

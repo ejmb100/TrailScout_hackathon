@@ -49,7 +49,7 @@ export function scoreAndFilterTrails(trails: TrailData[], prefs: RecommendationP
 
       if (trail.name) score += 5;
 
-      const dist = calculateDistance(trail.path);
+      const dist = effectiveTrailDistanceKm(trail);
       const ratio = targetKm > 0 ? dist / targetKm : 0;
 
       if (isMultiDay) {
@@ -66,8 +66,8 @@ export function scoreAndFilterTrails(trails: TrailData[], prefs: RecommendationP
           score -= 40;
         }
 
-        if ((tags.trailscout_source ?? '').includes('usfs_nfs')) {
-          score += 8;
+        if ((tags.trailscout_source ?? '').includes('usfs_nfs') || tags.trailscout_source === 'cotrex' || tags.trailscout_source === 'assembled_route') {
+          score += tags.trailscout_source === 'assembled_route' ? 18 : 8;
         }
       } else {
         if (ratio < 0.05) {
@@ -143,6 +143,18 @@ export function calculateDistance(path: { lat: number; lng: number }[]): number 
   return totalDist;
 }
 
+export function effectiveTrailDistanceKm(trail: TrailData): number {
+  const tagged = Number(trail.tags?.trailscout_length_km);
+  const geometry = calculateDistance(trail.path);
+  if (Number.isFinite(tagged) && tagged > 0) {
+    // COTREX/official services can expose authoritative route length even when map geometry is
+    // simplified for browser performance. Prefer the larger value so multi-day scoring does not
+    // demote valid Colorado route sections as tiny sampled segments.
+    return Math.max(tagged, geometry);
+  }
+  return geometry;
+}
+
 /**
  * Deterministic composite match score (0–100).
  *
@@ -156,7 +168,7 @@ export function computeDeterministicMatchScore(
   trail: TrailData,
   intent: IntentProfile,
 ): number {
-  const distKm = calculateDistance(trail.path);
+  const distKm = effectiveTrailDistanceKm(trail);
   const isMultiDay = intent.tripType === 'multi_day';
   const targetKm = isMultiDay
     ? Math.max(intent.searchDistanceKm, intent.dailyDistanceKm * intent.tripLengthDays)
@@ -208,7 +220,8 @@ export function computeDeterministicMatchScore(
   // ── Source quality (0–15) ──
   let sourceScore = 5;
   const src = tags.trailscout_source ?? '';
-  if (src.includes('usfs_nfs')) sourceScore = 15;
+  if (src === 'assembled_route') sourceScore = 14;
+  else if (src.includes('usfs_nfs') || src === 'cotrex') sourceScore = 15;
   else if (src === 'osm_relation') sourceScore = 12;
   else if (src === 'osm_way_segment') sourceScore = 7;
 

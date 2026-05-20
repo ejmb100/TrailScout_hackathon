@@ -36,7 +36,9 @@ import type { ForestAlerts } from '../services/forestAlertService';
 import { statusLabel, statusColor } from '../services/campsiteStatusService';
 import { calculateDistance } from '../utils/trailScoring';
 import { getDataVintage } from '../services/officialTrailService';
-import MapContainer, { type MapMarkerData } from './MapContainer';
+import MapContainer from './MapContainer';
+import { type MapMarkerData } from './MapContainer';
+import { buildTripPoiMarkers } from './tripPoiMarkers';
 
 // Same curated images as ResultCard
 const trailImages = [
@@ -99,13 +101,7 @@ const TripPlanView: React.FC<TripPlanViewProps> = ({
   const effortTier = effortEstimate ? effortDifficultyTier(effortEstimate, distKm) : null;
   const effortColor = effortTier ? effortTierColor(effortTier) : 'text-offwhite/50';
 
-  const poiMarkers: MapMarkerData[] = (campsiteStatuses ?? []).map(cs => ({
-    lat: cs.campsite.lat,
-    lng: cs.campsite.lng,
-    name: cs.campsite.name,
-    type: cs.campsite.siteType === 'trailhead' ? 'trailhead' as const : 'campsite' as const,
-    status: cs.status,
-  }));
+  const poiMarkers: MapMarkerData[] = buildTripPoiMarkers(multiDayItinerary, campsiteStatuses);
 
   const nearestAirport = travelPlan?.nearestAirports[0];
   const trailheadArrivalLabel = nearestAirport

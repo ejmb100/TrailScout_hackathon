@@ -76,11 +76,10 @@ export async function fetchRidbFacilities(
         radius: String(radiusMiles),
         limit: '50',
         offset: String(offset),
+        apikey: ridbKey,
       });
 
-      const res = await fetch(`${BASE_URL}/facilities?${params}`, {
-        headers: { apikey: ridbKey },
-      });
+      const res = await fetch(`${BASE_URL}/facilities?${params}`);
       if (!res.ok) throw new Error(`RIDB HTTP ${res.status}`);
       const data = await res.json();
       const items: unknown[] = data.RECDATA ?? [];

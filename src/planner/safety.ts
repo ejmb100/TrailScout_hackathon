@@ -37,6 +37,50 @@ function maxSacForIntent(difficulty: IntentProfile['difficulty']): number {
   }
 }
 
+function inferRequestedMonth(intent: IntentProfile, userQuery?: string): number | null {
+  const blob = `${intent.date} ${userQuery || ''}`.toLowerCase();
+  const names: Array<[RegExp, number]> = [
+    [/\bjan(?:uary)?\b/, 1], [/\bfeb(?:ruary)?\b/, 2], [/\bmar(?:ch)?\b/, 3],
+    [/\bapr(?:il)?\b/, 4], [/\bmay\b/, 5], [/\bjun(?:e)?\b/, 6],
+    [/\bjul(?:y)?\b/, 7], [/\baug(?:ust)?\b/, 8], [/\bsep(?:t(?:ember)?)?\b/, 9],
+    [/\boct(?:ober)?\b/, 10], [/\bnov(?:ember)?\b/, 11], [/\bdec(?:ember)?\b/, 12],
+  ];
+  for (const [rx, month] of names) if (rx.test(blob)) return month;
+  const iso = intent.date.match(/^\d{4}-(\d{2})-/);
+  if (iso) {
+    const month = Number(iso[1]);
+    if (month >= 1 && month <= 12) return month;
+  }
+  return null;
+}
+
+function numericTag(tags: Record<string, string>, keys: string[]): number | null {
+  for (const key of keys) {
+    const n = Number(tags[key]);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+function approximateMaxElevationM(trail: TrailData): number | null {
+  return numericTag(trail.tags, [
+    'cotrex_max_elevation_m',
+    'max_elevation_m',
+    'max_elev_m',
+    'ele',
+  ]);
+}
+
+function coloradoSeasonalSnowRisk(month: number | null, trail: TrailData): 'none' | 'moderate' | 'high' {
+  if (!month) return 'none';
+  const maxElev = approximateMaxElevationM(trail);
+  const highCountry = maxElev == null || maxElev >= 2800;
+  if (!highCountry) return 'none';
+  if ([12, 1, 2, 3, 4].includes(month)) return 'high';
+  if ([5, 6, 10, 11].includes(month)) return 'moderate';
+  return 'none';
+}
+
 function tierRank(t: TripRiskTier): number {
   switch (t) {
     case 'standard':
@@ -121,6 +165,16 @@ export function assessSafety(
   const winterInterest = inferWinterAlpineInterest(intent, userQuery);
   if (winterInterest && (tMax != null && tMax > 12 || tMin != null && tMin > 5)) {
     warnings.push('You mentioned winter/alpine conditions, but the forecast looks mild — season and elevation may not match.');
+  }
+
+  const requestedMonth = inferRequestedMonth(intent, userQuery);
+  const seasonalSnowRisk = coloradoSeasonalSnowRisk(requestedMonth, trail);
+  if (seasonalSnowRisk === 'high') {
+    tier = worseTier(tier, 'high');
+    warnings.push('Colorado high-country seasonal conditions: average winter/early-spring conditions commonly include snow and ice. Treat this as harder than summer hiking; microspikes, crampons/ice axe skills, avalanche awareness, and winter navigation may be required depending on route and recent storms.');
+  } else if (seasonalSnowRisk === 'moderate') {
+    tier = worseTier(tier, 'elevated');
+    warnings.push('Colorado high-country shoulder-season conditions may include lingering or early snow/ice, especially on north-facing slopes and passes. Difficulty may be higher than the nominal trail rating; carry traction if current reports indicate snow.');
   }
 
   if (tMin != null && tMin < -5) {

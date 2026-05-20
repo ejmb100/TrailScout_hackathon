@@ -1,7 +1,7 @@
 import type { IntentProfile } from '../services/geminiService';
 import type { TrailData } from '../services/osmService';
 import type { TrailFeasibilityResult } from './types';
-import { calculateDistance } from '../utils/trailScoring';
+import { effectiveTrailDistanceKm } from '../utils/trailScoring';
 import { effortTimeHours } from './effort';
 
 function isRelationTrail(tags: Record<string, string>): boolean {
@@ -12,8 +12,9 @@ function isSegmentTrail(tags: Record<string, string>): boolean {
   return tags.trailscout_source === 'osm_way_segment';
 }
 
-function isUsfsTrail(tags: Record<string, string>): boolean {
-  return (tags.trailscout_source ?? '').includes('usfs_nfs');
+function isOfficialTrailSource(tags: Record<string, string>): boolean {
+  const source = tags.trailscout_source ?? '';
+  return source.includes('usfs_nfs') || source === 'cotrex' || source === 'assembled_route';
 }
 
 /** Parse "14:00", "2:00 PM", "2pm" → minutes from midnight, or null */
@@ -51,7 +52,7 @@ export function assessFeasibility(intent: IntentProfile, trail: TrailData): Trai
   const blockingReasons: string[] = [];
   const warnings: string[] = [];
   const path = trail.path;
-  const distKm = path.length >= 2 ? calculateDistance(path) : 0;
+  const distKm = path.length >= 2 ? effectiveTrailDistanceKm(trail) : 0;
 
   const targetKm =
     intent.tripType === 'multi_day'
@@ -62,12 +63,16 @@ export function assessFeasibility(intent: IntentProfile, trail: TrailData): Trai
   const relation = isRelationTrail(trail.tags);
   const segment = isSegmentTrail(trail.tags);
 
-  const usfs = isUsfsTrail(trail.tags);
+  const usfs = isOfficialTrailSource(trail.tags);
 
   const stitched = trail.tags.trailscout_source === 'usfs_nfs_stitched';
   let geometryNote = 'Mapped OSM geometry length is used; it may be a segment, loop, or full route.';
   if (stitched) {
     geometryNote = `USFS stitched trail (${trail.tags.usfs_segment_count ?? '?'} segments joined) — geometry from official USDA data.`;
+  } else if (trail.tags.trailscout_source === 'assembled_route') {
+    geometryNote = `TrailScout assembled route (${trail.tags.assembled_segment_count ?? '?'} connected segments from ${trail.tags.assembled_sources ?? 'public trail sources'}) — verify exact routing before navigation.`;
+  } else if (trail.tags.trailscout_source === 'cotrex') {
+    geometryNote = 'COTREX trail — geometry and length from Colorado Trail Explorer public data.';
   } else if (usfs) {
     geometryNote = 'USFS National Forest System trail — geometry from official USDA data.';
   } else if (relation) {

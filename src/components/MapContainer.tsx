@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { TrailData } from '../services/osmService';
 import type { CampsiteStatus, CampsiteOperationalStatus } from '../services/campsiteStatusService';
+import { buildTrailEndpointMarkers } from './trailEndpointMarkers';
 
 declare global {
   interface Window {
@@ -70,6 +71,8 @@ export interface MapMarkerData {
   name: string;
   type: 'campsite' | 'trailhead';
   status?: CampsiteOperationalStatus;
+  /** Camping night number for itinerary overnight markers (1, 2, 3...). */
+  night?: number;
 }
 
 interface MapContainerProps {
@@ -94,12 +97,34 @@ function poiMarkerColor(marker: MapMarkerData): string {
   }
 }
 
-function LegendRow({ symbol, color, label }: { symbol: 'arrow' | 'circle'; color: string; label: string }) {
+function campsiteSvgIcon(color: string, night?: number): string {
+  const label = night != null ? String(night).replace(/[^0-9]/g, '') : '';
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="48" height="56" viewBox="0 0 48 56">
+      <ellipse cx="24" cy="50" rx="14" ry="4" fill="rgba(0,0,0,0.35)"/>
+      <circle cx="24" cy="24" r="21" fill="#0B1020" stroke="white" stroke-width="3"/>
+      <path d="M24 8 L42 40 H6 Z" fill="${color}" stroke="white" stroke-width="2.5" stroke-linejoin="round"/>
+      <path d="M24 12 L31 40 H17 Z" fill="#111827" fill-opacity="0.55" stroke="white" stroke-width="1.5" stroke-linejoin="round"/>
+      <path d="M6 40 H42" stroke="white" stroke-width="3" stroke-linecap="round"/>
+      <path d="M24 12 V40" stroke="white" stroke-width="1.5" stroke-linecap="round" opacity="0.75"/>
+      ${label ? `<circle cx="34" cy="14" r="10" fill="#0B1020" stroke="white" stroke-width="2"/><text x="34" y="18" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" font-weight="800" fill="white">${label}</text>` : `<text x="24" y="31" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" font-weight="900" fill="white">⛺</text>`}
+    </svg>`;
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+}
+
+function LegendRow({ symbol, color, label }: { symbol: 'arrow' | 'circle' | 'tent'; color: string; label: string }) {
   return (
     <div className="flex items-center gap-1.5">
       {symbol === 'arrow' ? (
         <svg width="10" height="10" viewBox="0 0 10 10" className="shrink-0">
           <polygon points="5,0 10,10 0,10" fill={color} />
+        </svg>
+      ) : symbol === 'tent' ? (
+        <svg width="14" height="14" viewBox="0 0 48 56" className="shrink-0">
+          <circle cx="24" cy="24" r="20" fill="#0B1020" stroke="white" strokeWidth="3" />
+          <path d="M24 9 L42 40 H6 Z" fill={color} stroke="white" strokeWidth="2.5" strokeLinejoin="round" />
+          <path d="M24 13 L31 40 H17 Z" fill="#111827" fillOpacity="0.55" stroke="white" strokeWidth="1.5" />
+          <path d="M6 40 H42" stroke="white" strokeWidth="3" strokeLinecap="round" />
         </svg>
       ) : (
         <svg width="10" height="10" viewBox="0 0 10 10" className="shrink-0">
@@ -254,21 +279,29 @@ const MapContainer: React.FC<MapContainerProps> = ({
       for (const poi of poiMarkers) {
         const color = poiMarkerColor(poi);
         const isTrailhead = poi.type === 'trailhead';
+        const isCampsite = poi.type === 'campsite';
+        const isNumberedCampsite = isCampsite && poi.night != null;
         const marker = new google.maps.Marker({
           position: { lat: poi.lat, lng: poi.lng },
           map: googleMap.current,
           title: `${poi.name}${poi.status ? ` (${poi.status})` : ''}`,
-          icon: {
-            path: isTrailhead
-              ? google.maps.SymbolPath.BACKWARD_CLOSED_ARROW
-              : google.maps.SymbolPath.CIRCLE,
-            scale: isTrailhead ? 5 : 6,
-            fillColor: color,
-            fillOpacity: 0.85,
-            strokeWeight: 1.5,
-            strokeColor: '#FFFFFF',
-          },
-          zIndex: isTrailhead ? 10 : 20,
+          icon: isCampsite
+            ? {
+                url: campsiteSvgIcon(color, poi.night),
+                scaledSize: new google.maps.Size(44, 52),
+                anchor: new google.maps.Point(22, 50),
+              }
+            : {
+                path: isTrailhead
+                  ? google.maps.SymbolPath.BACKWARD_CLOSED_ARROW
+                  : google.maps.SymbolPath.CIRCLE,
+                scale: isTrailhead ? 5 : 6,
+                fillColor: color,
+                fillOpacity: 0.85,
+                strokeWeight: 1.5,
+                strokeColor: '#FFFFFF',
+              },
+          zIndex: isNumberedCampsite ? 40 + (poi.night ?? 0) : isCampsite ? 30 : isTrailhead ? 10 : 20,
         });
         poiMarkersRef.current.push(marker);
       }
@@ -340,29 +373,35 @@ const MapContainer: React.FC<MapContainerProps> = ({
               hasPoints = true;
             }
           });
-
-          // Markers check
-          if (trail.path[0]) {
-            const marker = new google.maps.Marker({
-              position: trail.path[0],
-              map: googleMap.current,
-              title: trail.name,
-              icon: {
-                path: google.maps.SymbolPath.CIRCLE,
-                scale: isHighlight ? 6 : 5,
-                fillColor: trail.tags.color || '#03B2BA',
-                fillOpacity: 1,
-                strokeWeight: 2,
-                strokeColor: '#FFFFFF'
-              }
-            });
-            markers.current.push(marker);
-          }
         }
       } catch (e) {
         console.error(`Failed to render trail ${trail.name}:`, e);
       }
     });
+
+    for (const endpoint of buildTrailEndpointMarkers(trails)) {
+      const marker = new google.maps.Marker({
+        position: { lat: endpoint.lat, lng: endpoint.lng },
+        map: googleMap.current,
+        title: endpoint.title,
+        label: {
+          text: endpoint.label === 'Start' ? 'S' : 'E',
+          color: '#FFFFFF',
+          fontSize: '11px',
+          fontWeight: '800',
+        },
+        icon: {
+          path: google.maps.SymbolPath.CIRCLE,
+          scale: endpoint.label === 'Start' ? 9 : 8,
+          fillColor: endpoint.color,
+          fillOpacity: 1,
+          strokeWeight: endpoint.label === 'Start' ? 4 : 3,
+          strokeColor: endpoint.strokeColor,
+        },
+        zIndex: endpoint.label === 'Start' ? 55 : 54,
+      });
+      markers.current.push(marker);
+    }
 
     if (hasPoints && googleMap.current) {
       try {
@@ -403,14 +442,16 @@ const MapContainer: React.FC<MapContainerProps> = ({
         <div className="bg-navy/80 backdrop-blur-md px-4 py-2 rounded-full border border-white/10 text-[10px] font-bold text-teal uppercase tracking-widest shadow-xl pointer-events-auto">
           {trails.length} Trails Loaded via OSM
         </div>
-        {poiMarkers.length > 0 && (
+        {trails.length > 0 && (
           <div className="bg-navy/80 backdrop-blur-md px-3 py-2 rounded-xl border border-white/10 shadow-xl pointer-events-auto">
             <div className="text-[8px] text-offwhite/40 uppercase tracking-widest font-bold mb-1.5">Legend</div>
             <div className="flex flex-col gap-1">
+              <LegendRow symbol="circle" color="#F97316" label="Trail start (green outline)" />
+              <LegendRow symbol="circle" color="#EF4444" label="Trail end" />
               <LegendRow symbol="arrow" color="#A855F7" label="Trailhead" />
-              <LegendRow symbol="circle" color="#22C55E" label="Campsite (confirmed)" />
-              <LegendRow symbol="circle" color="#3B82F6" label="Campsite (walk-in)" />
-              <LegendRow symbol="circle" color="#FBBF24" label="Campsite (unverified)" />
+              <LegendRow symbol="tent" color="#22C55E" label="Camp night # (confirmed)" />
+              <LegendRow symbol="tent" color="#3B82F6" label="Camp night # (walk-in)" />
+              <LegendRow symbol="tent" color="#FBBF24" label="Camp night # (unverified)" />
               <LegendRow symbol="circle" color="#EF4444" label="Campsite (closed / fire)" />
             </div>
           </div>

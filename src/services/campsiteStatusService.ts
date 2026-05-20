@@ -72,6 +72,25 @@ const RIDB_MATCH_RADIUS_KM = 2.0;
 /** Max distance (km) for flagging a fire incident near a campsite. */
 const FIRE_PROXIMITY_KM = 8.0;
 
+function nameTokens(name: string): Set<string> {
+  const stop = new Set(['the', 'and', 'at', 'of', 'area', 'site', 'camp', 'campground', 'cg', 'rv']);
+  return new Set(
+    name.toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter(t => t.length >= 3 && !stop.has(t))
+  );
+}
+
+function namesLikelySame(a: string, b: string): boolean {
+  const at = nameTokens(a);
+  const bt = nameTokens(b);
+  if (at.size === 0 || bt.size === 0) return false;
+  let shared = 0;
+  at.forEach(t => { if (bt.has(t)) shared++; });
+  return shared >= 1;
+}
+
 function findClosestRidb(
   site: Campsite,
   facilities: RidbFacility[]
@@ -82,10 +101,12 @@ function findClosestRidb(
   for (const f of facilities) {
     if (f.type !== 'campground') continue;
     const d = haversineKm(site, { lat: f.lat, lng: f.lng });
-    if (d < bestDist) {
-      bestDist = d;
-      best = f;
-    }
+    if (d >= bestDist) continue;
+    // Avoid confirming the wrong facility when multiple Colorado campgrounds sit close together.
+    // A near-exact coordinate match is accepted; otherwise require a shared distinctive name token.
+    if (d > 0.25 && !namesLikelySame(site.name, f.name)) continue;
+    bestDist = d;
+    best = f;
   }
   return best;
 }
@@ -117,6 +138,34 @@ export function buildCampsiteStatuses(
   fetchedAt: string,
 ): CampsiteStatus[] {
   return edwSites.map(site => assessSite(site, ridbFacilities, alerts, fetchedAt));
+}
+
+function monthFromName(raw: string): number | null {
+  const m = raw.toLowerCase().slice(0, 3);
+  const months: Record<string, number> = {
+    jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+    jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+  };
+  return months[m] ?? null;
+}
+
+function seasonMonths(openSeason: string): { start: number; end: number } | null {
+  const matches = openSeason.match(/jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?/gi) ?? [];
+  const months = matches.map(monthFromName).filter((m): m is number => m != null);
+  if (months.length < 2) return null;
+  return { start: months[0], end: months[months.length - 1] };
+}
+
+function monthInSeason(month: number, season: { start: number; end: number }): boolean {
+  if (season.start <= season.end) return month >= season.start && month <= season.end;
+  return month >= season.start || month <= season.end;
+}
+
+function isOutsideOpenSeason(openSeason: string, isoDate: string): boolean {
+  const season = seasonMonths(openSeason);
+  if (!season) return false;
+  const month = new Date(isoDate).getUTCMonth() + 1;
+  return !monthInSeason(month, season);
 }
 
 function assessSite(
@@ -205,6 +254,21 @@ function assessSite(
       warnings,
       lastVerified: ridb.lastUpdated || fetchedAt,
       ridbMatch: ridb,
+      nearbyFire: null,
+    };
+  }
+
+  // Precedence 4: EDW only
+  if (site.openSeason && isOutsideOpenSeason(site.openSeason, fetchedAt)) {
+    warnings.push(`Seasonal closure likely — ${site.name} open season is "${site.openSeason}", which does not include the requested/planning date. Verify with the managing agency before relying on it.`);
+    return {
+      campsite: site,
+      status: 'seasonal_closure',
+      confidence: 75,
+      sources,
+      warnings,
+      lastVerified: fetchedAt,
+      ridbMatch: null,
       nearbyFire: null,
     };
   }

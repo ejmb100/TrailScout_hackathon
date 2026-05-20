@@ -21,7 +21,7 @@ function makeSite(overrides: Partial<Campsite> = {}): Campsite {
     fee: true,
     capacity: 20,
     packInOut: false,
-    openSeason: 'May - September',
+    openSeason: '',
     activities: ['camping'],
     permits: '',
     restrictions: '',

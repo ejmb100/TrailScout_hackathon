@@ -51,9 +51,11 @@ import { fetchTrailsWithFallback, type TrailData } from './services/osmService';
 import { enrichTrailsWithElevation } from './services/elevationService';
 import { fetchForecastForHike, type HikeForecast } from './services/weatherService';
 import { fetchApproxIpLocation, type ApproxIpLocation } from './services/ipGeoService';
-import { scoreAndFilterTrails, calculateDistance, computeDeterministicMatchScore } from './utils/trailScoring';
+import { scoreAndFilterTrails, calculateDistance, effectiveTrailDistanceKm, computeDeterministicMatchScore } from './utils/trailScoring';
 import { fetchOfficialTrailsInBBox, getOfficialTrailCount, getDataVintage } from './services/officialTrailService';
+import { fetchCotrexTrailsInBBox } from './services/cotrexService';
 import { fetchCampsitesInBBox } from './services/campsiteService';
+import { buildMultiDayRouteCandidates } from './services/routeBuilder';
 import { mergeTrailSources } from './services/trailMergeService';
 import {
   integratePlanner,
@@ -344,9 +346,14 @@ export default function App() {
         widenedBBox.maxLon
       );
 
-      // Fetch USFS trails, EDW campsites, RIDB facilities, and fire alerts in parallel
-      const [officialTrails, edwCampsites, ridbFacilities, alerts] = await Promise.all([
+      // Fetch Colorado-first COTREX, USFS trails, EDW campsites, RIDB facilities, and fire alerts in parallel.
+      // COTREX substantially improves Colorado backpacking discovery because it carries statewide
+      // CPW/USFS/BLM/local trail inventory with access, manager, surface, dog, elevation, and length fields.
+      const [officialTrails, cotrexTrails, edwCampsites, ridbFacilities, alerts] = await Promise.all([
         fetchOfficialTrailsInBBox(
+          widenedBBox.minLat, widenedBBox.minLon, widenedBBox.maxLat, widenedBBox.maxLon
+        ),
+        fetchCotrexTrailsInBBox(
           widenedBBox.minLat, widenedBBox.minLon, widenedBBox.maxLat, widenedBBox.maxLon
         ),
         fetchCampsitesInBBox(
@@ -359,15 +366,24 @@ export default function App() {
           widenedBBox.minLat, widenedBBox.minLon, widenedBBox.maxLat, widenedBBox.maxLon
         ),
       ]);
-      const mergedTrails = mergeTrailSources(rawTrails, officialTrails);
-      setHasOfficialTrails(officialTrails.length > 0);
+      const authoritativeTrails = [...officialTrails, ...cotrexTrails];
+      const mergedSegments = mergeTrailSources(rawTrails, authoritativeTrails);
+      const routeCandidates = isMultiDay
+        ? buildMultiDayRouteCandidates(mergedSegments, {
+            targetKm: profile.searchDistanceKm,
+            maxCandidates: 8,
+          })
+        : [];
+      const mergedTrails = isMultiDay ? [...routeCandidates, ...mergedSegments] : mergedSegments;
+      setHasOfficialTrails(authoritativeTrails.length > 0);
 
       // Build fused campsite statuses
       const statuses = buildCampsiteStatuses(edwCampsites, ridbFacilities, alerts, new Date().toISOString());
       setCampsiteStatuses(statuses);
       setForestAlerts(alerts);
       console.info(
-        `[TrailScout] official trails: ${officialTrails.length}, merged: ${mergedTrails.length}, ` +
+        `[TrailScout] official trails: ${officialTrails.length}, COTREX: ${cotrexTrails.length}, merged segments: ${mergedSegments.length}, ` +
+        `assembled routes: ${routeCandidates.length}, candidates: ${mergedTrails.length}, ` +
         `campsites: ${edwCampsites.length}, RIDB: ${ridbFacilities.length}, ` +
         `fire alerts: ${alerts.incidents.length} incidents, ${alerts.perimeters.length} perimeters`
       );
@@ -382,7 +398,7 @@ export default function App() {
       // Enrich with distance (horizontal)
       const enriched = withElevation.map(t => ({
         ...t,
-        distanceKm: calculateDistance(t.path),
+        distanceKm: effectiveTrailDistanceKm(t),
       }));
       setTrails(enriched);
       console.info('[TrailScout] search pipeline counts', {

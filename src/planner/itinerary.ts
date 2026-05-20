@@ -144,13 +144,27 @@ function buildCampsiteRecommendation(
   };
 }
 
-function isOfficialCampingSite(site: TrailCampsite): boolean {
-  return site.siteType === 'campground' || site.siteType === 'camping_area';
+function hasOvernightCampingActivity(site: TrailCampsite): boolean {
+  if (site.siteType === 'campground') return true;
+  const text = site.activities.join(' ').toLowerCase();
+  if (!text) return false;
+  const hasCamping = /\bcamping\b|overnight|backpacking/.test(text);
+  const dayUseOnly = /day use|picnick|interpretive|visitor center/.test(text) && !hasCamping;
+  return hasCamping && !dayUseOnly;
 }
+
+function isOfficialCampingSite(site: TrailCampsite): boolean {
+  if (site.siteType === 'campground') return true;
+  if (site.siteType === 'camping_area') return hasOvernightCampingActivity(site);
+  return false;
+}
+
+const MAX_UNVERIFIED_OVERNIGHT_OFFSET_KM = 1.6;
 
 function isEligibleOvernightSite(site: TrailCampsite, status?: TrailCampsiteStatus): boolean {
   if (!isOfficialCampingSite(site)) return false;
   if (status && isBlocked(status.status)) return false;
+  if ((!status || status.status === 'unverified') && site.offsetKm > MAX_UNVERIFIED_OVERNIGHT_OFFSET_KM) return false;
   return true;
 }
 
@@ -419,6 +433,10 @@ export function buildMultiDayItinerary(
     });
 
     currentKm = endKm;
+    if (!chosen) {
+      warnings.push(`Partial itinerary only: stopped at day ${day} because no source-backed overnight campground was found near the required stop window. TrailScout will not infer an overnight stop from route progress alone.`);
+      break;
+    }
   }
 
   return {

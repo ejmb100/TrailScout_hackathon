@@ -37,6 +37,10 @@ function safeStr(v: unknown): string {
   return String(v).trim();
 }
 
+function attr(a: Record<string, unknown>, key: string): unknown {
+  return a[key] ?? a[key.toLowerCase()] ?? a[key.toUpperCase()];
+}
+
 function normSiteType(raw: string): Campsite['siteType'] | null {
   switch (raw) {
     case 'CAMPGROUND': return 'campground';
@@ -86,6 +90,7 @@ export async function fetchCampsitesInBBox(
         where: `SITE_TYPE IN (${siteTypes})`,
         geometry: `${west},${south},${east},${north}`,
         geometryType: 'esriGeometryEnvelope',
+        inSR: '4326',
         spatialRel: 'esriSpatialRelIntersects',
         outFields: [
           'OBJECTID', 'SITE_NAME', 'SITE_TYPE', 'ACTIVITY_TYPE_LIST',
@@ -105,27 +110,27 @@ export async function fetchCampsitesInBBox(
 
       for (const f of features) {
         const a = f.attributes ?? {};
-        const lat = Number(a.LATITUDE);
-        const lng = Number(a.LONGITUDE);
+        const lat = Number(attr(a, 'LATITUDE'));
+        const lng = Number(attr(a, 'LONGITUDE'));
         if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat === 0 || lng === 0) continue;
 
-        const siteType = normSiteType(safeStr(a.SITE_TYPE));
+        const siteType = normSiteType(safeStr(attr(a, 'SITE_TYPE')).toUpperCase());
         if (!siteType) continue;
 
         sites.push({
-          id: Number(a.OBJECTID) || sites.length,
-          name: safeStr(a.SITE_NAME) || 'Unnamed Site',
+          id: Number(attr(a, 'OBJECTID')) || sites.length,
+          name: safeStr(attr(a, 'SITE_NAME')) || 'Unnamed Site',
           lat: Math.round(lat * 1e5) / 1e5,
           lng: Math.round(lng * 1e5) / 1e5,
           siteType,
-          water: parseWater(safeStr(a.WATER_AVAILABILITY)),
-          fee: safeStr(a.FEE_CHARGED) === 'Y',
-          capacity: Number(a.TOTAL_CAPACITY) || null,
-          packInOut: safeStr(a.PACK_IN_OUT) === 'Y',
-          openSeason: safeStr(a.OPEN_SEASON),
-          activities: parseActivities(safeStr(a.ACTIVITY_TYPE_LIST)),
-          permits: safeStr(a.PERMIT_INFORMATION),
-          restrictions: safeStr(a.RESTRICTIONS),
+          water: parseWater(safeStr(attr(a, 'WATER_AVAILABILITY'))),
+          fee: safeStr(attr(a, 'FEE_CHARGED')) === 'Y',
+          capacity: Number(attr(a, 'TOTAL_CAPACITY')) || null,
+          packInOut: safeStr(attr(a, 'PACK_IN_OUT')) === 'Y',
+          openSeason: safeStr(attr(a, 'OPEN_SEASON')),
+          activities: parseActivities(safeStr(attr(a, 'ACTIVITY_TYPE_LIST'))),
+          permits: safeStr(attr(a, 'PERMIT_INFORMATION')),
+          restrictions: safeStr(attr(a, 'RESTRICTIONS')),
         });
       }
 

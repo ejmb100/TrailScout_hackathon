@@ -110,6 +110,7 @@ async function fetchPage(
   const params = new URLSearchParams({
     geometry: `${west},${south},${east},${north}`,
     geometryType: 'esriGeometryEnvelope',
+    inSR: '4326',
     spatialRel: 'esriSpatialRelIntersects',
     where: '1=1',
     outFields: 'OBJECTID,TRAIL_NAME,TRAIL_NO,TRAIL_TYPE,TRAIL_CLASS,MANAGED_USE,SURFACE_TYPE,SPECIAL_MGMT_AREA,MANAGING_ORG,ADMIN_ORG,ACCESSIBILITY_STATUS',
