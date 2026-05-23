@@ -140,4 +140,30 @@ describe('Colorado multi-day scoring', () => {
 
     expect(ranked).toHaveLength(0);
   });
+
+  it('can return failed multi-day context candidates for planner gate reporting without marking them valid', () => {
+    const shortSegments = [13, 18, 25].map((km, index) => trail({
+      id: 200 + index,
+      name: `Short Context Segment ${km} km`,
+      tags: {
+        trailscout_source: 'cotrex',
+        trailscout_length_km: String(km),
+        hiking: 'yes',
+      },
+    }));
+
+    const ranked = scoreAndFilterTrails(shortSegments, {
+      difficulty: 'intermediate',
+      features: ['mountain'],
+      terrain: [],
+      maxDistance: 80,
+      tripType: 'multi_day',
+      allowMultiDayContextFallback: true,
+      reasoning: 'test',
+      locationQuery: 'Colorado',
+      estimatedRegionName: 'Colorado',
+    });
+
+    expect(ranked.map(t => t.id)).toEqual([202, 201]);
+  });
 });

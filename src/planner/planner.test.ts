@@ -246,6 +246,58 @@ describe('buildMultiDayItinerary', () => {
     expect(itinerary.campsitesFound).toBe(2);
   });
 
+  it('uses a nearby source-backed campsite before the ideal window instead of inventing a distance-only camp night', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => ({
+      ok: true,
+      json: async () => ({
+        features: [{
+          attributes: {
+            OBJECTID: 99011,
+            SITE_NAME: 'Just Before Window Campground',
+            SITE_TYPE: 'CAMPGROUND',
+            ACTIVITY_TYPE_LIST: 'CAMPING',
+            FEE_CHARGED: 'N',
+            WATER_AVAILABILITY: '',
+            TOTAL_CAPACITY: 6,
+            LATITUDE: 40.12,
+            LONGITUDE: -107.0,
+            PACK_IN_OUT: 'N',
+            OPEN_SEASON: '',
+            PERMIT_INFORMATION: '',
+            RESTRICTIONS: '',
+          },
+        }],
+      }),
+    })) as unknown as typeof fetch;
+
+    try {
+      await fetchCampsitesInBBox(40.0, -107.1, 40.5, -106.9);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    const trail: TrailData = {
+      id: 203,
+      name: 'Trail With Early Official Campground',
+      path: [
+        { lat: 40.0, lng: -107.0 },
+        { lat: 40.4, lng: -107.0 },
+      ],
+      tags: { trailscout_source: 'usfs_nfs' },
+    };
+
+    const itinerary = buildMultiDayItinerary(trail.path, 2, trail, { campsiteStatuses: [] });
+    const overnight = itinerary.days[0];
+
+    expect(overnight.campsite?.name).toBe('Just Before Window Campground');
+    expect(overnight.campsiteRecommendation.publicDataBacked).toBe(true);
+    expect(overnight.campsiteRecommendation.officialCampingFacility).toBe(true);
+    expect(overnight.campsiteRecommendation.type).toBe('official_camping_facility_unverified');
+    expect(overnight.notes).not.toContain('Do NOT camp here unless');
+    expect(itinerary.warnings.some(w => w.includes('shortened') && w.includes('Just Before Window Campground'))).toBe(true);
+  });
+
   it('treats EDW-only camping facilities as public-data-backed but not currently confirmed', async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () => ({

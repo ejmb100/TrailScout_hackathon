@@ -363,7 +363,7 @@ END:VCALENDAR`;
         )}
 
         <div className={`glass-bright rounded-3xl p-4 ${isMultiDay ? 'lg:col-span-3' : 'lg:col-span-2'}`}>
-          <div className={`${isMultiDay ? 'min-h-[24rem] lg:min-h-[42rem]' : 'h-full min-h-[20rem] lg:min-h-[28rem]'} rounded-[1.25rem] overflow-hidden border border-white/10`}>
+          <div className={`${isMultiDay ? 'h-[24rem] lg:h-[42rem]' : 'h-[20rem] lg:h-[28rem]'} rounded-[1.25rem] overflow-hidden border border-white/10`}>
             <MapContainer
               trails={[{ ...trail, tags: { ...trail.tags, color: '#FF7D0F' } }]}
               focusedTrailId={trail.id}

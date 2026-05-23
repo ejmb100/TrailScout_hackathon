@@ -325,15 +325,22 @@ export function buildMultiDayItinerary(
     let candidates = eligibleCampables.filter(
       c => c.trailKm >= windowMin && c.trailKm <= windowMax && c.trailKm > currentKm + 3
     );
+    let selectedOutsideIdealWindow: 'late' | 'early' | null = null;
 
     if (candidates.length === 0) {
       const stretchMax = Math.min(windowMax + STRETCH_LIMIT_KM, totalKm - 3);
       candidates = eligibleCampables.filter(
         c => c.trailKm > windowMax && c.trailKm <= stretchMax && c.trailKm > currentKm + 3
       );
-      if (candidates.length > 0) {
-        warnings.push(`Day ${day}: stretched ${(candidates[0].trailKm - idealStopKm).toFixed(1)} km past ideal to reach ${candidates[0].name}.`);
-      }
+      if (candidates.length > 0) selectedOutsideIdealWindow = 'late';
+    }
+
+    if (candidates.length === 0) {
+      const stretchMin = Math.max(currentKm + 3, windowMin - STRETCH_LIMIT_KM);
+      candidates = eligibleCampables.filter(
+        c => c.trailKm >= stretchMin && c.trailKm < windowMin && c.trailKm > currentKm + 3
+      );
+      if (candidates.length > 0) selectedOutsideIdealWindow = 'early';
     }
 
     let chosen: TrailCampsite | null = null;
@@ -356,6 +363,11 @@ export function buildMultiDayItinerary(
         return Math.abs(a.trailKm - idealStopKm) - Math.abs(b.trailKm - idealStopKm);
       });
       chosen = candidates[0];
+      if (selectedOutsideIdealWindow === 'late') {
+        warnings.push(`Day ${day}: stretched ${(chosen.trailKm - idealStopKm).toFixed(1)} km past ideal to reach ${chosen.name}.`);
+      } else if (selectedOutsideIdealWindow === 'early') {
+        warnings.push(`Day ${day}: shortened ${(idealStopKm - chosen.trailKm).toFixed(1)} km before ideal to use source-backed overnight site ${chosen.name}.`);
+      }
     }
 
     const endKm = chosen ? chosen.trailKm : idealStopKm;

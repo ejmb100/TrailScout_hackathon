@@ -75,6 +75,7 @@ import {
   buildCampsiteStatuses,
   type CampsiteStatus,
 } from './services/campsiteStatusService';
+import { APP_BUILD_LABEL } from './version';
 
 // ─── Screen types ─────────────────────────────────────────────────────
 
@@ -129,7 +130,7 @@ const Navbar: React.FC<{ onLogoClick: () => void }> = ({ onLogoClick }) => {
               TrailScout
             </span>
             <span className="text-[9px] text-teal/70 uppercase tracking-[0.2em] font-semibold">
-              Multi-Agent Engine
+              Multi-Agent Engine · {APP_BUILD_LABEL}
             </span>
           </div>
         </button>
@@ -137,6 +138,12 @@ const Navbar: React.FC<{ onLogoClick: () => void }> = ({ onLogoClick }) => {
         {/* Desktop nav */}
         <div className="hidden md:flex items-center gap-6">
           <a href="#how-it-works" className="text-sm text-offwhite/50 hover:text-teal transition-colors">How it Works</a>
+          <div
+            className="text-[10px] text-offwhite/35 font-mono uppercase tracking-wider border border-white/10 rounded-full px-2.5 py-1"
+            title="Visible build label for confirming which TrailScout checkout/deployment is running"
+          >
+            Build {APP_BUILD_LABEL}
+          </div>
           <div className="flex items-center gap-1.5 bg-teal/10 px-3 py-1.5 rounded-full border border-teal/20">
             <div className="w-1.5 h-1.5 rounded-full bg-teal animate-pulse" />
             <span className="text-[10px] text-teal font-semibold uppercase tracking-wider">4 Agents Online</span>
@@ -331,7 +338,9 @@ export default function App() {
       setHikeForecast(forecast);
 
       // ── Fetch trails from OSM (between agents) ──────────────────
-      const widenedBBox = widenBBox(bbox, isMultiDay ? 1.4 : 2.25);
+      // Multi-day trek discovery needs a broader corridor than a day hike: source features are
+      // often segmented, and adjacent route/campsite records can sit outside the LLM's tight bbox.
+      const widenedBBox = widenBBox(bbox, isMultiDay ? 2.5 : 2.25);
       const {
         trails: rawTrails,
         overpassUnavailable,
@@ -388,7 +397,10 @@ export default function App() {
         `fire alerts: ${alerts.incidents.length} incidents, ${alerts.perimeters.length} perimeters`
       );
 
-      const legacyPrefs = intentToLegacyPrefs(profile);
+      const legacyPrefs = {
+        ...intentToLegacyPrefs(profile),
+        allowMultiDayContextFallback: isMultiDay,
+      };
       const scored = scoreAndFilterTrails(mergedTrails, legacyPrefs).slice(0, isMultiDay ? 10 : 20);
 
       const withElevation = await enrichTrailsWithElevation(scored, {

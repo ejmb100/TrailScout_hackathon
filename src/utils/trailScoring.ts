@@ -109,6 +109,18 @@ export function scoreAndFilterTrails(trails: TrailData[], prefs: RecommendationP
     filtered = scored.filter((s) => s.dist >= minFloorRelaxed);
   }
 
+  if (isMultiDay && filtered.length === 0 && prefs.allowMultiDayContextFallback) {
+    // Keep the route-quality gate strict: these candidates are NOT treated as valid treks.
+    // Returning the strongest context candidates lets the downstream deterministic planner
+    // explain why every trail failed instead of aborting with an opaque "survived filtering" toast.
+    const contextFloorKm = Math.max(8, Math.min(24, targetKm * 0.20));
+    filtered = scored.filter((s) => s.dist >= contextFloorKm).slice(0, 10);
+    console.warn(
+      `[trailScoring] No multi-day candidates met ${minFloorStrong.toFixed(1)} km floor; ` +
+      `returning ${filtered.length} context candidate(s) above ${contextFloorKm.toFixed(1)} km for gate reporting`
+    );
+  }
+
   if (!isMultiDay && filtered.length === 0) {
     console.warn('[trailScoring] Still empty; returning best-effort score order');
     filtered = scored;

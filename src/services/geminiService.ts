@@ -839,6 +839,12 @@ export interface RecommendationPreferences {
   difficulty?: 'beginner' | 'intermediate' | 'advanced' | 'extreme';
   maxDistance?: number;
   tripType?: TripType;
+  /**
+   * Multi-day searches should not silently recommend short day-hike segments as valid treks.
+   * When true, the deterministic scorer may still return the best public-data candidates as
+   * context so the planner can show explicit gate failures instead of a fatal empty-results toast.
+   */
+  allowMultiDayContextFallback?: boolean;
   terrain?: string[];
   features?: string[];
   reasoning: string;
