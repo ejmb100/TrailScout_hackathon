@@ -23,3 +23,4 @@ export {
   type CampsiteConfidenceLevel,
 } from './itinerary';
 export { estimateEffort, effortTimeHours, effortDifficultyTier, effortTierColor, type EffortEstimate, type GradeSegment, type EffortTier } from './effort';
+export { buildTrainingProgram, trainingProgramToMarkdown, type TrainingProgram, type TrainingProgramInput, type TrainingSession, type TrainingWeek, type TrainingSessionType } from './training';

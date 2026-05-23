@@ -177,6 +177,75 @@ describe('buildMultiDayItinerary', () => {
     });
   });
 
+  it('keeps building later days when an earlier overnight window has no verified campsite', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => ({
+      ok: true,
+      json: async () => ({
+        features: [
+          {
+            attributes: {
+              OBJECTID: 99101,
+              SITE_NAME: 'Later Valley Campground',
+              SITE_TYPE: 'CAMPGROUND',
+              ACTIVITY_TYPE_LIST: 'CAMPING',
+              FEE_CHARGED: 'N',
+              WATER_AVAILABILITY: '',
+              TOTAL_CAPACITY: 8,
+              LATITUDE: 39.315,
+              LONGITUDE: -106.0,
+              PACK_IN_OUT: 'N',
+              OPEN_SEASON: '',
+              PERMIT_INFORMATION: '',
+              RESTRICTIONS: '',
+            },
+          },
+          {
+            attributes: {
+              OBJECTID: 99102,
+              SITE_NAME: 'Upper Basin Campground',
+              SITE_TYPE: 'CAMPGROUND',
+              ACTIVITY_TYPE_LIST: 'CAMPING',
+              FEE_CHARGED: 'N',
+              WATER_AVAILABILITY: '',
+              TOTAL_CAPACITY: 8,
+              LATITUDE: 39.45,
+              LONGITUDE: -106.0,
+              PACK_IN_OUT: 'N',
+              OPEN_SEASON: '',
+              PERMIT_INFORMATION: '',
+              RESTRICTIONS: '',
+            },
+          },
+        ],
+      }),
+    })) as unknown as typeof fetch;
+
+    try {
+      await fetchCampsitesInBBox(39.0, -106.1, 39.6, -105.9);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    const trail: TrailData = {
+      id: 202,
+      name: 'Trail With Early Campsite Gap',
+      path: [
+        { lat: 39.0, lng: -106.0 },
+        { lat: 39.54, lng: -106.0 },
+      ],
+      tags: { trailscout_source: 'usfs_nfs' },
+    };
+
+    const itinerary = buildMultiDayItinerary(trail.path, 4, trail, { targetDailyKm: 15, campsiteStatuses: [] });
+
+    expect(itinerary.days).toHaveLength(4);
+    expect(itinerary.days[0].campsite).toBeNull();
+    expect(itinerary.days[1].campsite?.name).toBe('Later Valley Campground');
+    expect(itinerary.days[2].campsite?.name).toBe('Upper Basin Campground');
+    expect(itinerary.campsitesFound).toBe(2);
+  });
+
   it('treats EDW-only camping facilities as public-data-backed but not currently confirmed', async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () => ({

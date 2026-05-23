@@ -434,8 +434,7 @@ export function buildMultiDayItinerary(
 
     currentKm = endKm;
     if (!chosen) {
-      warnings.push(`Partial itinerary only: stopped at day ${day} because no source-backed overnight campground was found near the required stop window. TrailScout will not infer an overnight stop from route progress alone.`);
-      break;
+      warnings.push(`Partial camp-night coverage: day ${day} uses an unverified distance-based segment endpoint because no source-backed overnight campground was found near that stop window. Later days will still be checked for official camping facilities.`);
     }
   }
 

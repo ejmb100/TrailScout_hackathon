@@ -115,4 +115,29 @@ describe('Colorado multi-day scoring', () => {
 
     expect(ranked[0].id).toBe(assembled.id);
   });
+
+  it('does not relax multi-day scoring down to short day-hike length segments when no assembled route is available', () => {
+    const shortSegments = [13, 18, 25].map((km, index) => trail({
+      id: 100 + index,
+      name: `Short Segment ${km} km`,
+      tags: {
+        trailscout_source: 'cotrex',
+        trailscout_length_km: String(km),
+        hiking: 'yes',
+      },
+    }));
+
+    const ranked = scoreAndFilterTrails(shortSegments, {
+      difficulty: 'intermediate',
+      features: ['mountain'],
+      terrain: [],
+      maxDistance: 80,
+      tripType: 'multi_day',
+      reasoning: 'test',
+      locationQuery: 'Colorado',
+      estimatedRegionName: 'Colorado',
+    });
+
+    expect(ranked).toHaveLength(0);
+  });
 });

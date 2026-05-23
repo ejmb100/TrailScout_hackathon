@@ -89,13 +89,13 @@ const TrailResultCard: React.FC<TrailResultCardProps> = ({
       onClick={onSelect}
       className={`w-full max-w-[15rem] sm:max-w-[16rem] h-full cursor-pointer group rounded-md transition-all duration-300 ${
         isSelected
-          ? 'ring-2 ring-teal ring-offset-2 ring-offset-navy shadow-[0_12px_40px_rgba(3,212,189,0.25)]'
+          ? 'ring-2 ring-orange ring-offset-2 ring-offset-navy shadow-[0_12px_40px_rgba(255,125,15,0.32)]'
           : 'shadow-[0_10px_36px_rgba(0,0,0,0.45)] hover:shadow-[0_14px_44px_rgba(0,0,0,0.55)]'
       }`}
       style={{
         borderWidth: 3,
         borderStyle: 'solid',
-        borderColor: '#e4d5bc',
+        borderColor: isSelected ? '#FF7D0F' : '#e4d5bc',
         background: 'linear-gradient(145deg, #efe6d4 0%, #d8ccb8 100%)',
       }}
     >
@@ -107,6 +107,11 @@ const TrailResultCard: React.FC<TrailResultCardProps> = ({
           </span>
           <span className="text-[10px] font-black text-navy font-display tabular-nums">#{rank + 1}</span>
         </div>
+        {isSelected && (
+          <div className="bg-orange text-navy text-[9px] font-black uppercase tracking-[0.18em] text-center py-1 border-b border-black/20">
+            Selected trail
+          </div>
+        )}
 
         {/* Hero image — shorter than portrait trading card */}
         <div className="relative aspect-[4/3] w-full max-h-[7.5rem] sm:max-h-[8rem] shrink-0 overflow-hidden bg-navy-light">
@@ -145,7 +150,7 @@ const TrailResultCard: React.FC<TrailResultCardProps> = ({
 
         {/* Card body — stats + copy */}
         <div className="flex flex-col flex-1 p-2 pt-1.5 gap-1.5 border-t border-white/6">
-          <h3 className="font-display font-bold text-xs sm:text-sm text-offwhite text-center leading-tight line-clamp-2 min-h-0 group-hover:text-teal transition-colors">
+          <h3 className={`font-display font-bold text-xs sm:text-sm text-center leading-tight line-clamp-2 min-h-0 transition-colors ${isSelected ? 'text-orange' : 'text-offwhite group-hover:text-orange'}`}>
             {trail.name || 'Unnamed Trail'}
           </h3>
 

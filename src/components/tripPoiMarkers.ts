@@ -8,8 +8,10 @@ function campsiteKey(lat: number, lng: number, name: string): string {
 
 /**
  * Build map POIs with itinerary campsites numbered by the night they are used.
- * Only source-backed campsite stops from the itinerary receive night numbers;
- * remaining status POIs are shown as context without a night label.
+ * Only selected overnight stops from the itinerary receive campsite markers;
+ * trailhead status POIs may remain as navigation context, but non-selected
+ * campsite/campground records are intentionally hidden on the focused trip map
+ * so the marker count matches the itinerary's mapped camp nights.
  */
 export function buildTripPoiMarkers(
   itinerary: MultiDayItinerary | undefined,
@@ -34,6 +36,7 @@ export function buildTripPoiMarkers(
   }
 
   for (const cs of campsiteStatuses) {
+    if (cs.campsite.siteType !== 'trailhead') continue;
     const key = campsiteKey(cs.campsite.lat, cs.campsite.lng, cs.campsite.name);
     if (used.has(key)) continue;
     markers.push({

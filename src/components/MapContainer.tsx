@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { TrailData } from '../services/osmService';
 import type { CampsiteStatus, CampsiteOperationalStatus } from '../services/campsiteStatusService';
 import { buildTrailEndpointMarkers } from './trailEndpointMarkers';
+import MapLibreTerrainMap from './MapLibreTerrainMap';
 
 declare global {
   interface Window {
@@ -153,7 +154,9 @@ const MapContainer: React.FC<MapContainerProps> = ({
   
   const [mapType, setMapType] = useState<'dark' | 'terrain' | 'satellite'>(INITIAL_MAP_TYPE);
   const [is3D, setIs3D] = useState(false);
+  const [showTerrain3D, setShowTerrain3D] = useState(false);
   const [showTrails, setShowTrails] = useState(true);
+  const [isTopoExpanded, setIsTopoExpanded] = useState(false);
 
     useEffect(() => {
       const initGoogleMapInner = () => {
@@ -330,6 +333,24 @@ const MapContainer: React.FC<MapContainerProps> = ({
       googleMap.current.setCenter(center);
     }, [center.lat, center.lng, trails.length]);
 
+    useEffect(() => {
+      if (googleMap.current) {
+        window.setTimeout(() => {
+          if (!googleMap.current) return;
+          google.maps.event.trigger(googleMap.current, 'resize');
+          renderTrails();
+        }, 0);
+      }
+    }, [isTopoExpanded]);
+
+    useEffect(() => {
+      const onKeyDown = (event: KeyboardEvent) => {
+        if (event.key === 'Escape') setIsTopoExpanded(false);
+      };
+      window.addEventListener('keydown', onKeyDown);
+      return () => window.removeEventListener('keydown', onKeyDown);
+    }, []);
+
   const renderTrails = () => {
     if (!googleMap.current) return;
     
@@ -434,11 +455,28 @@ const MapContainer: React.FC<MapContainerProps> = ({
   };
 
   return (
-    <div className="relative w-full h-full rounded-[2.5rem] overflow-hidden border border-white/10 shadow-2xl group">
-      <div ref={mapRef} className="w-full h-full" />
+    <div
+      className={`relative w-full h-full rounded-[2.5rem] overflow-hidden border border-white/10 shadow-2xl group ${
+        isTopoExpanded
+          ? 'fixed inset-3 sm:inset-6 z-[80] rounded-[2rem] bg-navy'
+          : ''
+      }`}
+    >
+      <div ref={mapRef} className={`w-full h-full ${showTerrain3D ? 'opacity-0 pointer-events-none' : ''}`} />
+      {showTerrain3D && (
+        <div className="absolute inset-0 z-10">
+          <MapLibreTerrainMap
+            trails={showTrails ? trails : []}
+            center={center}
+            zoom={zoom}
+            poiMarkers={showTrails ? poiMarkers : []}
+            resizeSignal={isTopoExpanded}
+          />
+        </div>
+      )}
       
       {/* Floating Map Dashboard */}
-      <div className="absolute top-4 left-4 flex flex-col gap-2">
+      <div className="absolute top-4 left-4 flex flex-col gap-2 z-20">
         <div className="bg-navy/80 backdrop-blur-md px-4 py-2 rounded-full border border-white/10 text-[10px] font-bold text-teal uppercase tracking-widest shadow-xl pointer-events-auto">
           {trails.length} Trails Loaded via OSM
         </div>
@@ -485,6 +523,13 @@ const MapContainer: React.FC<MapContainerProps> = ({
         >
           3D Angle
         </button>
+        <button
+          onClick={() => setShowTerrain3D(!showTerrain3D)}
+          className={`px-4 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-widest transition-colors ${showTerrain3D ? 'bg-green text-navy shadow-[0_0_15px_rgba(34,197,94,0.45)]' : 'text-offwhite/70 hover:text-offwhite'}`}
+          title="Render true DEM-based mountain terrain with MapLibre + MapTiler"
+        >
+          3D Terrain
+        </button>
         <div className="w-px h-4 bg-white/20 mx-1 self-center" />
         <button
           onClick={() => setShowTrails(!showTrails)}
@@ -492,9 +537,18 @@ const MapContainer: React.FC<MapContainerProps> = ({
         >
           Trail
         </button>
+        <div className="w-px h-4 bg-white/20 mx-1 self-center" />
+        <button
+          onClick={() => setIsTopoExpanded((value) => !value)}
+          className={`px-4 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-widest transition-colors ${isTopoExpanded ? 'bg-orange text-navy shadow-[0_0_15px_rgba(255,125,15,0.5)]' : 'text-offwhite/70 hover:text-offwhite'}`}
+          title={isTopoExpanded ? 'Collapse the expanded topo map' : 'Expand the topo map for a larger route view'}
+          aria-pressed={isTopoExpanded}
+        >
+          {isTopoExpanded ? 'Collapse' : 'Expand Topo'}
+        </button>
       </div>
 
-      <div className="absolute bottom-6 left-6 right-6 pointer-events-none">
+      <div className="absolute bottom-6 left-6 right-6 pointer-events-none z-20">
         <div className="flex justify-between items-end gap-4">
            {/* Tooltip */}
            <div className="bg-navy/90 backdrop-blur-md p-4 rounded-3xl border border-white/10 shadow-2xl max-w-sm pointer-events-auto">
@@ -503,7 +557,11 @@ const MapContainer: React.FC<MapContainerProps> = ({
                 Live Map Interaction
               </h4>
               <p className="text-offwhite/60 text-xs leading-relaxed">
-                Hold <kbd className="bg-white/10 px-1 rounded">Shift</kbd> and drag to manually tilt and observe trails.
+                {showTerrain3D
+                  ? 'MapLibre terrain mode uses MapTiler DEM tiles: drag to rotate, pitch, and inspect mountain relief.'
+                  : 'Hold '}
+                {!showTerrain3D && <kbd className="bg-white/10 px-1 rounded">Shift</kbd>}
+                {!showTerrain3D && ' and drag to manually tilt and observe trails.'}
               </p>
            </div>
            

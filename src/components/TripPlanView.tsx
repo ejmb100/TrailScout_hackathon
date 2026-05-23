@@ -28,7 +28,8 @@ import {
 } from 'lucide-react';
 import type { IntentProfile, TripPlan, TrailCandidate, ValidationResult } from '../services/geminiService';
 import type { PlannerRecommendation, MultiDayItinerary, AssumptionEntry, EffortEstimate } from '../planner';
-import { effortDifficultyTier, effortTierColor } from '../planner';
+import { buildTrainingProgram, trainingProgramToMarkdown, effortDifficultyTier, effortTierColor } from '../planner';
+import { buildDaySegmentLabel, getCampNightCoverage } from './itineraryDisplay';
 import type { TravelPlan } from '../services/travelLogisticsService';
 import type { TrailData } from '../services/osmService';
 import type { CampsiteStatus } from '../services/campsiteStatusService';
@@ -100,8 +101,22 @@ const TripPlanView: React.FC<TripPlanViewProps> = ({
 
   const effortTier = effortEstimate ? effortDifficultyTier(effortEstimate, distKm) : null;
   const effortColor = effortTier ? effortTierColor(effortTier) : 'text-offwhite/50';
+  const trainingProgram = effortEstimate
+    ? buildTrainingProgram({
+        effort: effortEstimate,
+        distanceKm: targetHikeKm && targetHikeKm > distKm ? targetHikeKm : distKm,
+        tripDays: tripLengthDays,
+        weeksUntilTrip: 8,
+        conditions: {
+          dateText: intentProfile?.date,
+          regionText: `${intentProfile?.estimatedRegionName ?? ''} ${intentProfile?.location ?? ''}`,
+          conditionText: `${plan.conditionsSummary} ${plan.weatherSummary} ${Array.isArray(plan.safetyNotes) ? plan.safetyNotes.join(' ') : plan.safetyNotes}`,
+        },
+      })
+    : null;
 
   const poiMarkers: MapMarkerData[] = buildTripPoiMarkers(multiDayItinerary, campsiteStatuses);
+  const campNightCoverage = getCampNightCoverage(multiDayItinerary, tripLengthDays);
 
   const nearestAirport = travelPlan?.nearestAirports[0];
   const trailheadArrivalLabel = nearestAirport
@@ -168,6 +183,17 @@ END:VCALENDAR`;
     setShared(true);
   };
 
+  const handleDownloadTrainingProgram = () => {
+    if (!trainingProgram) return;
+    const md = trainingProgramToMarkdown(trainingProgram, {
+      tripName: plan.recommendedTrailName || trail.name || 'TrailScout hike',
+      totalDistanceKm: targetHikeKm && targetHikeKm > distKm ? targetHikeKm : distKm,
+      tripDays: tripLengthDays,
+    });
+    const blob = new Blob([md], { type: 'text/markdown' });
+    triggerDownload(blob, `trailscout_training_${trail.name?.replace(/\s+/g, '_') || 'program'}.md`);
+  };
+
   // Download full plan
   const handleDownload = () => {
     let md = `# 🏔️ TrailScout Trip Plan\n\n`;
@@ -194,7 +220,7 @@ END:VCALENDAR`;
       for (const seg of multiDayItinerary.days) {
         const camp = seg.campsite && seg.day < multiDayItinerary.days.length ? ` → Camp: ${seg.campsite.name}` : '';
         const source = seg.campsiteRecommendation?.source ? ` Source: ${seg.campsiteRecommendation.source}.` : '';
-        md += `- **Day ${seg.day}:** ${seg.distanceKm} km (km ${seg.startKm}–${seg.endKm}) — ${seg.notes}${source}${camp}\n`;
+        md += `- **Day ${seg.day}:** ${buildDaySegmentLabel(multiDayItinerary, seg)} (km ${seg.startKm}–${seg.endKm}) — ${seg.notes}${source}${camp}\n`;
       }
       md += `\n`;
     } else if (dailyPlan.length > 0) {
@@ -221,6 +247,18 @@ END:VCALENDAR`;
           md += `- **${t.mode}**${t.estimatedTime ? ` (${t.estimatedTime})` : ''}: ${t.description}\n`;
         });
       }
+      md += `\n`;
+    }
+    if (trainingProgram) {
+      md += `### Suggested Training Plan\n`;
+      md += `- **Effort tier:** ${trainingProgram.effortTier}\n`;
+      md += `- **Peak day hike target:** ~${trainingProgram.peakTargets.longHikeKm} km — hardest expected training day, not full trip distance\n`;
+      md += `- **Peak climb:** ~${trainingProgram.peakTargets.climbM} m\n`;
+      md += `- **Pack practice:** up to ~${trainingProgram.peakTargets.packWeightKg} kg\n`;
+      if (trainingProgram.conditionModifier.factors.length > 0) {
+        md += `- **Condition modifier:** ${trainingProgram.conditionModifier.factors.join(', ')} (${trainingProgram.conditionModifier.multiplier}x)\n`;
+      }
+      trainingProgram.actionItems.forEach(item => { md += `- ${item}\n`; });
       md += `\n`;
     }
     md += `### What to Bring\n`;
@@ -281,58 +319,97 @@ END:VCALENDAR`;
 
       {/* Hero and map row */}
       <div className="grid lg:grid-cols-3 gap-6 mb-8">
-        <div className="relative rounded-3xl overflow-hidden min-h-[20rem] lg:min-h-[28rem] lg:col-span-1">
-          <img
-            src={imageUrl}
-            alt={trail.name}
-            className="absolute inset-0 w-full h-full object-cover"
-            referrerPolicy="no-referrer"
-          />
-          <div className="absolute inset-0 bg-gradient-to-t from-navy via-navy/75 to-navy/10" />
-          <div className="relative h-full flex flex-col justify-end p-6 md:p-8">
-            <div className="flex items-center gap-2 mb-3 flex-wrap">
-              <div
-                className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
-                  plan.recommendedTrailId === 0
-                    ? 'bg-red/25 text-red border border-red/30'
+        {!isMultiDay && (
+          <div className="relative rounded-3xl overflow-hidden min-h-[20rem] lg:min-h-[28rem] lg:col-span-1">
+            <img
+              src={imageUrl}
+              alt={trail.name}
+              className="absolute inset-0 w-full h-full object-cover"
+              referrerPolicy="no-referrer"
+            />
+            <div className="absolute inset-0 bg-gradient-to-t from-navy via-navy/75 to-navy/10" />
+            <div className="relative h-full flex flex-col justify-end p-6 md:p-8">
+              <div className="flex items-center gap-2 mb-3 flex-wrap">
+                <div
+                  className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                    plan.recommendedTrailId === 0
+                      ? 'bg-red/25 text-red border border-red/30'
+                      : plannerRecommendation?.status === 'conditional'
+                        ? 'bg-amber/25 text-amber border border-amber/35'
+                        : 'gradient-teal text-navy'
+                  }`}
+                >
+                  {plan.recommendedTrailId === 0
+                    ? 'No primary pick'
                     : plannerRecommendation?.status === 'conditional'
-                      ? 'bg-amber/25 text-amber border border-amber/35'
-                      : 'gradient-teal text-navy'
-                }`}
-              >
-                {plan.recommendedTrailId === 0
-                  ? 'No primary pick'
-                  : plannerRecommendation?.status === 'conditional'
-                    ? 'Conditional pick'
-                    : '#1 Recommended'}
+                      ? 'Conditional pick'
+                      : '#1 Recommended'}
+                </div>
+                <div
+                  className={`backdrop-blur px-3 py-1 rounded-full text-[10px] font-bold flex items-center gap-1 ${
+                    plan.recommendedTrailId === 0 ? 'bg-white/5 text-offwhite/45' : 'bg-white/10 text-offwhite'
+                  }`}
+                >
+                  <Star className={`w-3 h-3 ${plan.recommendedTrailId === 0 ? 'text-offwhite/35' : 'text-amber'}`} />{' '}
+                  {candidate.matchScore}% Match
+                </div>
               </div>
-              <div
-                className={`backdrop-blur px-3 py-1 rounded-full text-[10px] font-bold flex items-center gap-1 ${
-                  plan.recommendedTrailId === 0 ? 'bg-white/5 text-offwhite/45' : 'bg-white/10 text-offwhite'
-                }`}
-              >
-                <Star className={`w-3 h-3 ${plan.recommendedTrailId === 0 ? 'text-offwhite/35' : 'text-amber'}`} />{' '}
-                {candidate.matchScore}% Match
-              </div>
+              <h1 className="font-display text-3xl md:text-4xl font-bold text-offwhite mb-2">
+                {trail.name || 'Unnamed Trail'}
+              </h1>
+              <p className="text-offwhite/70 text-sm">{plan.whyChosen}</p>
             </div>
-            <h1 className="font-display text-3xl md:text-4xl font-bold text-offwhite mb-2">
-              {trail.name || 'Unnamed Trail'}
-            </h1>
-            <p className="text-offwhite/70 text-sm">{plan.whyChosen}</p>
           </div>
-        </div>
+        )}
 
-        <div className="glass-bright rounded-3xl p-4 lg:col-span-2">
-          <div className="h-full min-h-[20rem] lg:min-h-[28rem] rounded-[1.25rem] overflow-hidden border border-white/10">
+        <div className={`glass-bright rounded-3xl p-4 ${isMultiDay ? 'lg:col-span-3' : 'lg:col-span-2'}`}>
+          <div className={`${isMultiDay ? 'min-h-[24rem] lg:min-h-[42rem]' : 'h-full min-h-[20rem] lg:min-h-[28rem]'} rounded-[1.25rem] overflow-hidden border border-white/10`}>
             <MapContainer
               trails={[{ ...trail, tags: { ...trail.tags, color: '#FF7D0F' } }]}
               focusedTrailId={trail.id}
               poiMarkers={poiMarkers}
             />
           </div>
-          <p className="text-[11px] text-offwhite/40 mt-3 px-1">
-            Map is focused on the selected trail only.
-          </p>
+          {isMultiDay ? (
+            <div className="mt-4 px-1">
+              <div className="flex items-center gap-2 mb-2 flex-wrap">
+                <div
+                  className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                    plan.recommendedTrailId === 0
+                      ? 'bg-red/25 text-red border border-red/30'
+                      : plannerRecommendation?.status === 'conditional'
+                        ? 'bg-amber/25 text-amber border border-amber/35'
+                        : 'gradient-teal text-navy'
+                  }`}
+                >
+                  {plan.recommendedTrailId === 0
+                    ? 'No primary pick'
+                    : plannerRecommendation?.status === 'conditional'
+                      ? 'Conditional pick'
+                      : '#1 Recommended'}
+                </div>
+                <div
+                  className={`backdrop-blur px-3 py-1 rounded-full text-[10px] font-bold flex items-center gap-1 ${
+                    plan.recommendedTrailId === 0 ? 'bg-white/5 text-offwhite/45' : 'bg-white/10 text-offwhite'
+                  }`}
+                >
+                  <Star className={`w-3 h-3 ${plan.recommendedTrailId === 0 ? 'text-offwhite/35' : 'text-amber'}`} />{' '}
+                  {candidate.matchScore}% Match
+                </div>
+              </div>
+              <h1 className="font-display text-3xl md:text-5xl font-bold text-offwhite mb-2">
+                {trail.name || 'Unnamed Trail'}
+              </h1>
+              <p className="text-offwhite/70 text-sm md:text-base max-w-4xl">{plan.whyChosen}</p>
+              <p className="text-[11px] text-offwhite/40 mt-3">
+                Full-width backpacking map is focused on the selected trail and planned camp nights.
+              </p>
+            </div>
+          ) : (
+            <p className="text-[11px] text-offwhite/40 mt-3 px-1">
+              Map is focused on the selected trail only.
+            </p>
+          )}
         </div>
       </div>
 
@@ -444,7 +521,7 @@ END:VCALENDAR`;
                           time={`Day ${seg.day}`}
                           label={
                             <span>
-                              <span className="text-teal font-semibold tabular-nums">{seg.distanceKm} km</span>
+                              <span className="text-teal font-semibold tabular-nums">{buildDaySegmentLabel(multiDayItinerary, seg)}</span>
                               {seg.effortHours != null && (
                                 <span className="text-blue/70 ml-1 text-[11px]">~{seg.effortHours} h</span>
                               )}
@@ -504,6 +581,17 @@ END:VCALENDAR`;
                     }
                     icon="✅"
                   />
+
+                  {campNightCoverage.expected > 0 && (
+                    <div className={`mt-3 p-3 rounded-lg border ${campNightCoverage.complete ? 'bg-teal/5 border-teal/15' : 'bg-amber/5 border-amber/15'}`}>
+                      <div className={`text-[10px] font-bold uppercase tracking-wider mb-1 ${campNightCoverage.complete ? 'text-teal' : 'text-amber'}`}>
+                        Camp nights mapped: {campNightCoverage.mapped}/{campNightCoverage.expected}
+                      </div>
+                      <p className="text-xs text-offwhite/60">
+                        The map shows only selected itinerary camp-night markers plus trailheads; nearby non-selected campgrounds are hidden to avoid confusing them with planned overnight stops.
+                      </p>
+                    </div>
+                  )}
 
                   {multiDayItinerary.warnings.length > 0 && (
                     <div className="mt-3 p-3 rounded-lg bg-amber/5 border border-amber/15">
@@ -827,6 +915,56 @@ END:VCALENDAR`;
               </motion.button>
             </div>
           </div>
+
+          {trainingProgram && (
+            <div className="glass-bright rounded-2xl p-6 border border-teal/15">
+              <h3 className="font-display font-bold text-lg text-offwhite mb-4 flex items-center gap-2">
+                <TrendingUp className="w-5 h-5 text-teal" /> Suggested Training Plan
+              </h3>
+              <div className="grid grid-cols-3 gap-2 mb-4">
+                <div className="bg-white/5 rounded-xl p-3 text-center">
+                  <div className="text-[9px] text-offwhite/40 uppercase tracking-wider mb-1">Peak day hike</div>
+                  <div className="text-sm font-bold text-teal tabular-nums">{trainingProgram.peakTargets.longHikeKm} km</div>
+                </div>
+                <div className="bg-white/5 rounded-xl p-3 text-center">
+                  <div className="text-[9px] text-offwhite/40 uppercase tracking-wider mb-1">Climb</div>
+                  <div className="text-sm font-bold text-green tabular-nums">{trainingProgram.peakTargets.climbM} m</div>
+                </div>
+                <div className="bg-white/5 rounded-xl p-3 text-center">
+                  <div className="text-[9px] text-offwhite/40 uppercase tracking-wider mb-1">Pack</div>
+                  <div className="text-sm font-bold text-amber tabular-nums">{trainingProgram.peakTargets.packWeightKg} kg</div>
+                </div>
+              </div>
+              {trainingProgram.conditionModifier.factors.length > 0 && (
+                <div className="mb-3 rounded-xl bg-amber/10 border border-amber/20 px-3 py-2">
+                  <div className="text-[9px] font-bold text-amber uppercase tracking-wider mb-1">
+                    Condition-adjusted · {trainingProgram.conditionModifier.multiplier}x
+                  </div>
+                  <p className="text-xs text-offwhite/65">{trainingProgram.conditionModifier.factors.join(', ')}</p>
+                </div>
+              )}
+              <div className="space-y-2">
+                {trainingProgram.actionItems.slice(0, 4).map((item, i) => (
+                  <div key={i} className="flex items-start gap-2 text-sm text-offwhite/70">
+                    <ChevronRight className="w-3 h-3 text-teal mt-0.5 flex-shrink-0" />
+                    <span>{item}</span>
+                  </div>
+                ))}
+              </div>
+              <motion.button
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                onClick={handleDownloadTrainingProgram}
+                className="mt-4 w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-bold text-xs bg-teal/10 text-teal border border-teal/20 hover:bg-teal/20 transition-all"
+              >
+                <Download className="w-4 h-4" />
+                Download Training Program
+              </motion.button>
+              <p className="text-[10px] text-offwhite/35 mt-3 border-t border-white/5 pt-3 leading-relaxed">
+                {trainingProgram.disclaimer}
+              </p>
+            </div>
+          )}
 
           {/* Safety notes */}
           <div className="glass-bright rounded-2xl p-6">

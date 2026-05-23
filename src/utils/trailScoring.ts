@@ -99,19 +99,17 @@ export function scoreAndFilterTrails(trails: TrailData[], prefs: RecommendationP
     .sort((a, b) => b.score - a.score);
 
   const minFloorStrong = isMultiDay
-    ? Math.max(12, 0.35 * targetKm)
+    ? Math.max(24, 0.45 * targetKm)
     : Math.max(1.0, 0.25 * targetKm);
   let filtered = scored.filter((s) => s.dist >= minFloorStrong);
 
-  if (filtered.length === 0) {
+  if (!isMultiDay && filtered.length === 0) {
     console.warn('[trailScoring] No trails above length floor; relaxing min distance filter');
-    const minFloorRelaxed = isMultiDay
-      ? Math.max(8, 0.2 * targetKm)
-      : Math.max(0.4, 0.08 * targetKm);
+    const minFloorRelaxed = Math.max(0.4, 0.08 * targetKm);
     filtered = scored.filter((s) => s.dist >= minFloorRelaxed);
   }
 
-  if (filtered.length === 0) {
+  if (!isMultiDay && filtered.length === 0) {
     console.warn('[trailScoring] Still empty; returning best-effort score order');
     filtered = scored;
   }

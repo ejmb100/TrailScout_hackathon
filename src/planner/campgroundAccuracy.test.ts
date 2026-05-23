@@ -127,7 +127,7 @@ describe('Colorado campground accuracy failure modes', () => {
     expect(statuses[0].warnings.join(' ')).toMatch(/No Recreation\.gov match/i);
   });
 
-  it('cycle 4: stops a sparse-route itinerary at the first unverified overnight gap instead of fabricating later day starts', () => {
+  it('cycle 4: keeps sparse-route itinerary days but does not fabricate campsite markers for unverified overnight gaps', () => {
     const sparsePath = [
       { lat: 38.0, lng: -108.0 },
       { lat: 38.2, lng: -108.0 },
@@ -136,9 +136,10 @@ describe('Colorado campground accuracy failure modes', () => {
     ];
     const itinerary = buildMultiDayItinerary(sparsePath, 4, undefined, { campsiteStatuses: [] });
 
-    expect(itinerary.days.length).toBe(1);
-    expect(itinerary.days[0].campsite).toBeNull();
-    expect(itinerary.warnings.join(' ')).toMatch(/partial|will not infer camping/i);
+    expect(itinerary.days.length).toBe(4);
+    expect(itinerary.campsitesFound).toBe(0);
+    expect(itinerary.days.every(day => day.campsite === null)).toBe(true);
+    expect(itinerary.warnings.join(' ')).toMatch(/partial camp-night coverage|will not infer camping/i);
   });
 
   it('cycle 5: rejects an unverified overnight site that is too far from the mapped route', async () => {

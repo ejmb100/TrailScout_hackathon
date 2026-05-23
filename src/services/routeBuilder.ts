@@ -170,14 +170,11 @@ export function buildMultiDayRouteCandidates(
 
   const candidates: { trail: TrailData; lengthKm: number; score: number }[] = [];
   let ordinal = 0;
+  const minimumRouteKm = Math.max(24, targetKm * 0.45);
 
-  for (const group of groups.values()) {
-    if (group.length < 2) continue;
-    const chain = chainGroup(group, maxGapKm);
-    if (chain.length < 2) continue;
-
+  function addCandidate(chain: TrailData[]): void {
     const lengthKm = chain.reduce((sum, trail) => sum + trailLengthKm(trail), 0);
-    if (lengthKm < Math.max(24, targetKm * 0.45)) continue;
+    if (lengthKm < minimumRouteKm) return;
 
     const path = chain.reduce<TrailPoint[]>((acc, trail) => appendPath(acc, trail.path, maxGapKm), []);
     const sources = [...new Set(chain.map((trail) => trail.tags.trailscout_source || 'unknown'))].sort();
@@ -201,6 +198,25 @@ export function buildMultiDayRouteCandidates(
     const distanceScore = Math.abs(1 - ratio);
     const segmentBonus = Math.min(chain.length, 8) * 0.02;
     candidates.push({ trail, lengthKm, score: distanceScore - segmentBonus });
+  }
+
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    const chain = chainGroup(group, maxGapKm);
+    if (chain.length < 2) continue;
+
+    for (let start = 0; start < chain.length - 1; start++) {
+      const window: TrailData[] = [];
+      let windowLengthKm = 0;
+      for (let end = start; end < chain.length; end++) {
+        window.push(chain[end]);
+        windowLengthKm += trailLengthKm(chain[end]);
+        if (window.length >= 2 && windowLengthKm >= minimumRouteKm) {
+          addCandidate([...window]);
+        }
+        if (windowLengthKm > targetKm * 1.85 && window.length > 2) break;
+      }
+    }
   }
 
   return candidates

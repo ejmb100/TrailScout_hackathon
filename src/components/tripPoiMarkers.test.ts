@@ -91,4 +91,61 @@ describe('buildTripPoiMarkers', () => {
       lng: -106.1,
     });
   });
+
+  it('does not clutter the focused itinerary map with non-itinerary campsite context markers', () => {
+    const markers = buildTripPoiMarkers(itinerary, [
+      {
+        campsite: {
+          id: 100,
+          name: 'Nearby But Not Selected Campground',
+          lat: 39.2,
+          lng: -106.2,
+          siteType: 'campground',
+          water: true,
+          fee: false,
+          capacity: 10,
+          packInOut: false,
+          openSeason: '',
+          activities: ['CAMPING'],
+          permits: '',
+          restrictions: '',
+        },
+        status: 'confirmed',
+        confidence: 90,
+        sources: [],
+        warnings: [],
+        lastVerified: '2026-05-20',
+        ridbMatch: null,
+        nearbyFire: null,
+      },
+      {
+        campsite: {
+          id: 101,
+          name: 'Route Trailhead',
+          lat: 39.3,
+          lng: -106.3,
+          siteType: 'trailhead',
+          water: null,
+          fee: false,
+          capacity: null,
+          packInOut: false,
+          openSeason: '',
+          activities: [],
+          permits: '',
+          restrictions: '',
+        },
+        status: 'unverified',
+        confidence: 50,
+        sources: [],
+        warnings: [],
+        lastVerified: '2026-05-20',
+        ridbMatch: null,
+        nearbyFire: null,
+      },
+    ]);
+
+    expect(markers.filter((m) => m.type === 'campsite')).toHaveLength(1);
+    expect(markers.some((m) => m.name === 'Nearby But Not Selected Campground')).toBe(false);
+    expect(markers.some((m) => m.name === 'Route Trailhead' && m.type === 'trailhead')).toBe(true);
+  });
 });

@@ -50,4 +50,21 @@ describe('buildMultiDayRouteCandidates', () => {
 
     expect(candidates).toHaveLength(0);
   });
+
+  it('returns target-sized contiguous route windows instead of only the whole long trail family', () => {
+    const trails = [
+      segment(1, 'Colorado Trail Segment 10 - Timberline Lake to Mount Massive', -106.50, -106.40),
+      segment(2, 'Colorado Trail Segment 11 - Mount Massive to Clear Creek', -106.4005, -106.30),
+      segment(3, 'Colorado Trail Segment 12 - Clear Creek to Silver Creek', -106.3005, -106.20),
+      segment(4, 'Colorado Trail Segment 13 - Silver Creek to Chalk Creek', -106.2005, -106.10),
+      segment(5, 'Colorado Trail Segment 14 - Chalk Creek to Mount Princeton', -106.1005, -106.00),
+    ];
+
+    const candidates = buildMultiDayRouteCandidates(trails, { targetKm: 40, maxCandidates: 3 });
+
+    expect(candidates).toHaveLength(3);
+    expect(candidates[0].tags.assembled_segment_count).toBe('2');
+    expect(effectiveTrailDistanceKm(candidates[0])).toBeCloseTo(40, 1);
+    expect(candidates[0].tags.assembled_source_ids.split(',')).toHaveLength(2);
+  });
 });
