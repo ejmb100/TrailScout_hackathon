@@ -7,7 +7,7 @@
  * API docs: https://ridb.recreation.gov/docs
  */
 
-const BASE_URL = 'https://ridb.recreation.gov/api/v1';
+const BASE_URL = '/api/ridb';
 const ridbKey = (typeof __TRAILSCOUT_RIDB_KEY__ !== 'undefined' ? __TRAILSCOUT_RIDB_KEY__ : '').trim();
 
 export const isRidbConfigured = ridbKey.length > 0;
@@ -51,8 +51,6 @@ let cachedBBox = '';
 export async function fetchRidbFacilities(
   south: number, west: number, north: number, east: number
 ): Promise<RidbFacility[]> {
-  if (!isRidbConfigured) return [];
-
   const bboxKey = `${south},${west},${north},${east}`;
   if (bboxKey === cachedBBox && cachedFacilities.length > 0) return cachedFacilities;
 
@@ -76,10 +74,9 @@ export async function fetchRidbFacilities(
         radius: String(radiusMiles),
         limit: '50',
         offset: String(offset),
-        apikey: ridbKey,
       });
 
-      const res = await fetch(`${BASE_URL}/facilities?${params}`);
+      const res = await fetch(`${BASE_URL}?${params}`);
       if (!res.ok) throw new Error(`RIDB HTTP ${res.status}`);
       const data = await res.json();
       const items: unknown[] = data.RECDATA ?? [];

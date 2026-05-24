@@ -12,6 +12,8 @@
  */
 
 import type { Campsite, TrailCampsite } from './campsiteService';
+import { filterCampsitesNearPath } from './campsiteService';
+import type { TrailPoint } from './osmService';
 import type { RidbFacility } from './recreationGovService';
 import type { ForestAlerts, FireIncident } from './forestAlertService';
 
@@ -138,6 +140,22 @@ export function buildCampsiteStatuses(
   fetchedAt: string,
 ): CampsiteStatus[] {
   return edwSites.map(site => assessSite(site, ridbFacilities, alerts, fetchedAt));
+}
+
+export function filterCampsiteStatusesNearPath(
+  statuses: CampsiteStatus[],
+  path: TrailPoint[],
+  maxOffsetKm = 5,
+): CampsiteStatus[] {
+  if (path.length < 2 || statuses.length === 0) return statuses;
+  const nearIds = new Set(
+    filterCampsitesNearPath(
+      statuses.map((status) => status.campsite),
+      path,
+      maxOffsetKm,
+    ).map((site) => site.id),
+  );
+  return statuses.filter((status) => nearIds.has(status.campsite.id));
 }
 
 function monthFromName(raw: string): number | null {

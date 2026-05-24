@@ -115,7 +115,9 @@ const TripPlanView: React.FC<TripPlanViewProps> = ({
       })
     : null;
 
-  const poiMarkers: MapMarkerData[] = buildTripPoiMarkers(multiDayItinerary, campsiteStatuses);
+  const poiMarkers: MapMarkerData[] = buildTripPoiMarkers(multiDayItinerary, campsiteStatuses, {
+    trailPath: trail.path,
+  });
   const campNightCoverage = getCampNightCoverage(multiDayItinerary, tripLengthDays);
 
   const nearestAirport = travelPlan?.nearestAirports[0];

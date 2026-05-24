@@ -1,1 +1,1 @@
-export const APP_BUILD_LABEL = 'trek-fallback-v1';
+export const APP_BUILD_LABEL = 'campsite-map-v1';

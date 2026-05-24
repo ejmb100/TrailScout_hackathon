@@ -92,7 +92,7 @@ describe('buildTripPoiMarkers', () => {
     });
   });
 
-  it('does not clutter the focused itinerary map with non-itinerary campsite context markers', () => {
+  it('shows nearby official campgrounds along the focused route', () => {
     const markers = buildTripPoiMarkers(itinerary, [
       {
         campsite: {
@@ -122,8 +122,8 @@ describe('buildTripPoiMarkers', () => {
         campsite: {
           id: 101,
           name: 'Route Trailhead',
-          lat: 39.3,
-          lng: -106.3,
+          lat: 39.12,
+          lng: -106.1,
           siteType: 'trailhead',
           water: null,
           fee: false,
@@ -142,10 +142,15 @@ describe('buildTripPoiMarkers', () => {
         ridbMatch: null,
         nearbyFire: null,
       },
-    ]);
+    ], {
+      trailPath: [
+        { lat: 39.1, lng: -106.1 },
+        { lat: 39.25, lng: -106.25 },
+      ],
+    });
 
-    expect(markers.filter((m) => m.type === 'campsite')).toHaveLength(1);
-    expect(markers.some((m) => m.name === 'Nearby But Not Selected Campground')).toBe(false);
+    expect(markers.filter((m) => m.type === 'campsite')).toHaveLength(2);
+    expect(markers.some((m) => m.name === 'Nearby But Not Selected Campground')).toBe(true);
     expect(markers.some((m) => m.name === 'Route Trailhead' && m.type === 'trailhead')).toBe(true);
   });
 });

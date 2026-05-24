@@ -266,3 +266,17 @@ export function getCampsiteVintage(): { fetchedAt: string; attribution: string }
 export function getCampsiteCount(): number {
   return cachedSites.length;
 }
+
+/**
+ * Keep campsite POIs that sit near the selected trail corridor so map markers
+ * stay visible when the camera is zoomed to the route (the search bbox can be much larger).
+ */
+export function filterCampsitesNearPath(
+  sites: Campsite[],
+  path: TrailPoint[],
+  maxOffsetKm = 5
+): Campsite[] {
+  if (path.length < 2) return sites;
+  const cumDist = cumulativeDistances(path);
+  return sites.filter((site) => snapToPath(site, path, cumDist).offsetKm <= maxOffsetKm);
+}

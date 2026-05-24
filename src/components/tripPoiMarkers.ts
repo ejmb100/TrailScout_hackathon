@@ -1,5 +1,7 @@
 import type { MultiDayItinerary } from '../planner';
 import type { CampsiteStatus } from '../services/campsiteStatusService';
+import { filterCampsiteStatusesNearPath } from '../services/campsiteStatusService';
+import type { TrailPoint } from '../services/osmService';
 import type { MapMarkerData } from './MapContainer';
 
 function campsiteKey(lat: number, lng: number, name: string): string {
@@ -15,7 +17,8 @@ function campsiteKey(lat: number, lng: number, name: string): string {
  */
 export function buildTripPoiMarkers(
   itinerary: MultiDayItinerary | undefined,
-  campsiteStatuses: CampsiteStatus[] = []
+  campsiteStatuses: CampsiteStatus[] = [],
+  options?: { trailPath?: TrailPoint[] },
 ): MapMarkerData[] {
   const markers: MapMarkerData[] = [];
   const used = new Set<string>();
@@ -35,7 +38,26 @@ export function buildTripPoiMarkers(
     });
   }
 
-  for (const cs of campsiteStatuses) {
+  const trailPath = options?.trailPath ?? [];
+  const routeStatuses = trailPath.length >= 2
+    ? filterCampsiteStatusesNearPath(campsiteStatuses, trailPath, 3)
+    : campsiteStatuses;
+
+  for (const cs of routeStatuses) {
+    if (cs.campsite.siteType === 'trailhead') continue;
+    const key = campsiteKey(cs.campsite.lat, cs.campsite.lng, cs.campsite.name);
+    if (used.has(key)) continue;
+    used.add(key);
+    markers.push({
+      lat: cs.campsite.lat,
+      lng: cs.campsite.lng,
+      name: cs.campsite.name,
+      type: 'campsite',
+      status: cs.status,
+    });
+  }
+
+  for (const cs of routeStatuses) {
     if (cs.campsite.siteType !== 'trailhead') continue;
     const key = campsiteKey(cs.campsite.lat, cs.campsite.lng, cs.campsite.name);
     if (used.has(key)) continue;
@@ -43,7 +65,7 @@ export function buildTripPoiMarkers(
       lat: cs.campsite.lat,
       lng: cs.campsite.lng,
       name: cs.campsite.name,
-      type: cs.campsite.siteType === 'trailhead' ? 'trailhead' : 'campsite',
+      type: 'trailhead',
       status: cs.status,
     });
   }

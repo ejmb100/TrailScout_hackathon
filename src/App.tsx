@@ -73,6 +73,7 @@ import { fetchRidbFacilities } from './services/recreationGovService';
 import { fetchForestAlerts, type ForestAlerts } from './services/forestAlertService';
 import {
   buildCampsiteStatuses,
+  filterCampsiteStatusesNearPath,
   type CampsiteStatus,
 } from './services/campsiteStatusService';
 import { APP_BUILD_LABEL } from './version';
@@ -1268,7 +1269,11 @@ export default function App() {
                       ? { lat: approxUserLocation.lat, lng: approxUserLocation.lng }
                       : undefined
                   }
-                  poiMarkers={campsiteStatuses.map(cs => ({
+                  poiMarkers={filterCampsiteStatusesNearPath(
+                    campsiteStatuses,
+                    trails[selectedTrailIndex]?.path ?? [],
+                    5,
+                  ).map(cs => ({
                     lat: cs.campsite.lat,
                     lng: cs.campsite.lng,
                     name: cs.campsite.name,
