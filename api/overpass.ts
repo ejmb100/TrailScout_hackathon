@@ -1,4 +1,4 @@
-import { queryOverpass } from '../server/overpassProxy';
+import { queryOverpass } from './lib/overpassProxy';
 
 interface ApiRequest {
   method?: string;

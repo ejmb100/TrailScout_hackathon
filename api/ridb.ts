@@ -1,4 +1,4 @@
-import { queryRidb } from '../server/ridbProxy';
+import { queryRidb } from './lib/ridbProxy';
 
 interface ApiRequest {
   method?: string;
@@ -39,9 +39,15 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
   const apiKey = (process.env.RIDB_API_KEY || '').trim();
   const path = '/facilities' + queryString(req);
 
-  const result = await queryRidb(path, apiKey);
-  res.status(result.status);
-  res.setHeader('Content-Type', 'application/json; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-store');
-  res.send(result.text);
+  try {
+    const result = await queryRidb(path, apiKey);
+    res.status(result.status);
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(result.text);
+  } catch (error) {
+    console.error('[ridb-proxy] Vercel handler failed:', error);
+    res.status(502).setHeader('Content-Type', 'application/json');
+    res.send(JSON.stringify({ error: 'RIDB proxy failed' }));
+  }
 }
