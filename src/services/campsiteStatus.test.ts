@@ -123,6 +123,38 @@ describe('buildCampsiteStatuses', () => {
     expect(result[0].confidence).toBeGreaterThan(85);
   });
 
+  it('caps RIDB campsite-level enrichment requests', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        RECDATA: [],
+        METADATA: { RESULTS: { TOTAL_COUNT: 0 } },
+      }),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const sites = [0, 1, 2].map((i) =>
+      makeSite({
+        id: i + 1,
+        name: `Campground ${i + 1}`,
+        lat: 37.5 + i * 0.05,
+        lng: -107.5,
+      }),
+    );
+    const ridbFacilities = [0, 1, 2].map((i) =>
+      makeRidb({
+        facilityId: String(1000 + i),
+        name: `Campground ${i + 1}`,
+        lat: 37.5 + i * 0.05,
+        lng: -107.5,
+      }),
+    );
+
+    await buildCampsiteStatusesWithRidbCampsites(sites, ridbFacilities, makeAlerts(), NOW, 2);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('returns walk_in when RIDB match is enabled but not reservable', () => {
     const site = makeSite();
     const ridb = makeRidb({ reservable: false, lat: 37.5001, lng: -107.5001 });

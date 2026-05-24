@@ -1,5 +1,3 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
-
 /**
  * Multi-Agent Gemini Service for TrailScout
  * 
@@ -107,14 +105,24 @@ export interface TripPlan {
 
 // ─── Gemini Setup ──────────────────────────────────────────────────────
 
-const geminiApiKey = (__TRAILSCOUT_GEMINI__ || '').trim();
-export const isGeminiApiKeyConfigured = geminiApiKey.length > 0;
+// Gemini calls are routed through same-origin serverless endpoints so the API key
+// never ships in the browser bundle. Missing/quota-limited server keys fall back
+// to deterministic client behavior below.
+export const isGeminiApiKeyConfigured = true;
 
-const genAI = new GoogleGenerativeAI(geminiApiKey);
-const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-
-function cleanJsonResponse(text: string): string {
-  return text.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+async function postGeminiEndpoint<T>(path: string, payload: unknown): Promise<T> {
+  const response = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = data?.error || `Gemini endpoint ${path} failed with HTTP ${response.status}`;
+    const hint = data?.fallbackReason ? ` (${data.fallbackReason})` : '';
+    throw new Error(`${error}${hint}`);
+  }
+  return data as T;
 }
 
 function clamp(n: number, min: number, max: number): number {
@@ -530,65 +538,13 @@ export { normalizeIntentProfile };
 // ─── Agent 1: Intent Agent ────────────────────────────────────────────
 
 export async function runIntentAgent(userRequest: string): Promise<IntentProfile> {
-  const today = new Date().toISOString().split('T')[0];
-  const prompt = `You are the INTENT AGENT in a multi-agent outdoor planning system called TrailScout.
-
-Your job: Parse the user's natural-language hiking request into a structured search profile.
-
-Today's date: ${today}
-
-USER REQUEST: "${userRequest}"
-
-Extract and return a JSON object with these fields:
-{
-  "location": "specific place/region (if not specified, pick a beautiful hiking destination)",
-  "activity": "hiking" | "backpacking",
-  "date": "YYYY-MM-DD or 'today' or 'tomorrow'",
-  "month": "month name if the user names a month/season, otherwise omit or infer from date",
-  "difficulty": "easy" | "moderate" | "hard" | "expert",
-  "tripType": "day_hike" | "multi_day",
-  "tripLengthDays": number,
-  "durationDays": number,
-  "overnightRequired": boolean,
-  "routeType": "loop" | "out_and_back" | "point_to_point" | "unspecified",
-  "campsiteSupportRequired": boolean,
-  "permitCheckRequired": boolean,
-  "seasonalityCheckRequired": boolean,
-  "snowRiskCheckRequired": boolean,
-  "accessCheckRequired": boolean,
-  "maxDistanceKm": number (convert miles to km if needed. 1 mile = 1.60934 km). This is the user's desired TOTAL hike length for the outing (out-and-back, loop, or one-way as they described),
-  "dailyDistanceKm": number (for multi-day trips, estimate a realistic average daily mileage in km; for day hikes it can match maxDistanceKm),
-  "searchDistanceKm": number (for multi-day trips, set this to a substantial route-discovery target rather than the full trip total),
-  "elevationPreference": "flat" | "rolling" | "steep" | "any",
-  "sceneryPreferences": ["lake", "forest", "mountain", "waterfall", "ridge", "meadow", "river", etc.],
-  "crowdPreference": "low" | "moderate" | "any",
-  "dogFriendly": boolean,
-  "kidFriendly": boolean,
-  "weatherTolerance": "fair_only" | "light_rain_ok" | "any",
-  "latestReturnTime": "HH:MM" or "none",
-  "driveTimeTolerance": "< 30 min" | "< 1 hour" | "< 2 hours" | "any",
-  "reasoning": "2-3 sentences explaining how you interpreted the request",
-  "estimatedRegionName": "Human-readable region name",
-  "bbox": { "minLat": number, "maxLat": number, "minLon": number, "maxLon": number },
-  "followUpQuestions": ["any clarifying questions you would ask, max 2"]
-}
-
-For the bbox: Make it proportional to the route-discovery target, not the full backpacking trip total. For 10+ km route discovery use about 0.15-0.3 degree spread. For shorter walks, 0.05-0.1. Avoid giant statewide boxes for multi-day trips.
-If no location specified, choose a spectacular hiking destination and explain why.
-
-maxDistanceKm must reflect the full hike or backpacking trip the user asked for (e.g. "10 mile hike" -> ~16 km, "3 day backpacking trip around 30 miles" -> ~48 km). Do not understate this number.
-Multi-day hiking language such as "four-day hiking trail" or "two-night hike" implies backpacking, overnightRequired=true, campsiteSupportRequired=true, permitCheckRequired=true, seasonalityCheckRequired=true, snowRiskCheckRequired=true for mountain regions, and accessCheckRequired=true unless the user clearly says they only want day hikes.
-
-Respond ONLY with valid JSON.`;
-
   try {
-    const result = await model.generateContent(prompt);
-    const text = result.response.text();
-    return normalizeIntentProfile(JSON.parse(cleanJsonResponse(text)), userRequest);
+    const result = await postGeminiEndpoint<{ profile: unknown }>('/api/gemini-intent', { userRequest });
+    return normalizeIntentProfile(result.profile, userRequest);
   } catch (error) {
-    console.error('[Intent Agent] Failed:', error);
+    console.warn('[Intent Agent] Server Gemini unavailable; using fallback profile:', error);
     return buildDefaultIntentProfile(
-      'Error parsing your request. Using default moderate hike preferences.',
+      'Gemini intent parsing was unavailable or quota-limited, so TrailScout used deterministic fallback preferences.',
       userRequest
     );
   }
@@ -666,45 +622,15 @@ export async function runResearchAgent(
     tags: t.tags
   }));
 
-  const prompt = `You are the RESEARCH AGENT in a multi-agent outdoor planning system.
-
-The Intent Agent extracted this profile:
-${JSON.stringify(intent, null, 2)}
-
-Here are candidate trails from OpenStreetMap:
-${JSON.stringify(trailSummary, null, 2)}
-
-CRITICAL LENGTH RULE: intent.maxDistanceKm is the user's desired TOTAL outing distance. intent.searchDistanceKm is the route-discovery target that should guide matching, especially for multi-day backpacking trips. Each trail's distanceKm is the length of the mapped OSM geometry (full route relation when available, otherwise a named way segment). For day hikes, compare primarily to intent.maxDistanceKm. For multi-day trips, compare primarily to intent.searchDistanceKm, while noting that the full trip may extend beyond the mapped geometry. Mention length mismatch honestly in matchExplanation when the trail is much shorter than the requested outing or too small to support a multi-day plan.
-
-When present, use elevationGainM and elevationLossM (meters, sampled along the trail: USGS 3DEP in the United States, otherwise coarse global DEM) in match explanations and difficulty context.
-
-For each trail (up to the top 5 best matches), produce a research analysis:
-{
-  "trailId": number,
-  "trailName": "string",
-  "matchScore": number (0-100, how well it matches the intent — NOTE: this will be overridden by a deterministic score downstream, so focus your effort on matchExplanation quality instead),
-  "matchExplanation": "2-3 sentences explaining why this trail fits or does not fit the request. Be specific about distance match, terrain character, scenery, and any concerns. This explanation is the primary value you provide — the scoring is handled deterministically.",
-  "estimatedDriveTime": "estimate from the region center",
-  "weatherForecast": "realistic weather estimate for ${intent.date} in ${intent.location}",
-  "crowdLevel": "low" | "moderate" | "high" (estimate based on trail type and popularity),
-  "bestTimeToGo": "recommended start time",
-  "sceneryHighlights": ["key scenic features"],
-  "trailImageQuery": "a search query that would find a good photo of this specific area"
-}
-
-Return a JSON ARRAY of these objects, sorted by matchScore descending. Max 5 trails.
-Respond ONLY with valid JSON array.`;
-
   try {
-    const result = await model.generateContent(prompt);
-    const text = result.response.text();
-    const parsed = JSON.parse(cleanJsonResponse(text));
+    const result = await postGeminiEndpoint<{ candidates: unknown }>('/api/gemini-research', { intent, trails: trailSummary });
+    const parsed = result.candidates;
     if (!Array.isArray(parsed) || parsed.length === 0) {
       return fallbackResearchCandidates(trailsRaw);
     }
     return parsed;
   } catch (error) {
-    console.error('[Research Agent] Failed:', error);
+    console.warn('[Research Agent] Server Gemini unavailable; using fallback candidates:', error);
     return fallbackResearchCandidates(trailsRaw);
   }
 }
@@ -715,100 +641,7 @@ export async function runValidationAgent(
   intent: IntentProfile,
   candidates: TrailCandidate[]
 ): Promise<ValidationResult[]> {
-  const prompt = `You are the VALIDATION AGENT in a multi-agent outdoor planning system.
-
-Your job: Rigorously validate each trail candidate against the user's constraints.
-
-User's Intent Profile:
-${JSON.stringify(intent, null, 2)}
-
-Candidate trails from Research Agent:
-${JSON.stringify(candidates, null, 2)}
-
-Each candidate may include distanceKm (mapped OpenStreetMap path length in km). For day hikes compare distanceKm to intent.maxDistanceKm. For multi-day trips compare first to intent.searchDistanceKm, while also considering whether the trail system seems capable of supporting the total trip distance intent.maxDistanceKm. If distanceKm is far below the relevant target, lower overallFit, add warnings, and note the mismatch. If distanceKm is missing, infer cautiously from trailName and matchExplanation.
-
-For each trail, perform these checks:
-- Distance appropriate relative to maxDistanceKm (mapped OSM length vs user's desired total)?
-- Difficulty appropriate?
-- Dog-friendly if required?
-- Kid-friendly if required?
-- Return time feasible given latestReturnTime?
-- Weather acceptable given tolerance?
-- Crowd level acceptable?
-- Scenery matches preferences?
-
-Return a JSON ARRAY:
-{
-  "trailId": number,
-  "trailName": "string",
-  "overallFit": "excellent" | "good" | "fair" | "poor",
-  "confidenceScore": number (0-100),
-  "passedChecks": ["Distance OK ✓", "Difficulty match ✓", etc.],
-  "warnings": ["Moderate crowd expected", "No shade on ridge section", etc.],
-  "risks": ["Weather risk: afternoon thunderstorms possible", etc.],
-  "isRecommended": boolean
-}
-
-Be honest and specific. Flag real risks.
-IMPORTANT: Set isRecommended true only when a trail clearly satisfies the user's hard constraints (distance, dog/kid needs, weather tolerance, return time). If none are a clear safe match, set isRecommended false for all — downstream deterministic rules will re-check and may still decline a primary pick. Your narrative and isRecommended are advisory; they do not override geometry or safety gates.
-Respond ONLY with valid JSON array.`;
-
-  try {
-    const result = await model.generateContent(prompt);
-    const text = result.response.text();
-    const parsed = JSON.parse(cleanJsonResponse(text));
-    if (!Array.isArray(parsed) || parsed.length === 0) {
-      return fallbackValidationResults(candidates, intent);
-    }
-
-    const candidateIds = new Set(candidates.map((c) => c.trailId));
-    const normalized = parsed
-      .filter((item): item is Record<string, unknown> => item && typeof item === 'object')
-      .map((item) => {
-        const trailId = parseFiniteNumber(item.trailId);
-        if (trailId == null || !candidateIds.has(trailId)) return null;
-        return {
-          trailId,
-          trailName: typeof item.trailName === 'string' ? item.trailName : String(trailId),
-          overallFit:
-            item.overallFit === 'excellent' ||
-            item.overallFit === 'good' ||
-            item.overallFit === 'fair' ||
-            item.overallFit === 'poor'
-              ? item.overallFit
-              : 'good',
-          confidenceScore: clamp(parseFiniteNumber(item.confidenceScore) ?? 70, 0, 100),
-          passedChecks: Array.isArray(item.passedChecks)
-            ? item.passedChecks.map((v) => String(v)).filter(Boolean)
-            : [],
-          warnings: Array.isArray(item.warnings)
-            ? item.warnings.map((v) => String(v)).filter(Boolean)
-            : [],
-          risks: Array.isArray(item.risks)
-            ? item.risks.map((v) => String(v)).filter(Boolean)
-            : [],
-          isRecommended: Boolean(item.isRecommended),
-        } satisfies ValidationResult;
-      })
-      .filter((item): item is ValidationResult => item != null);
-
-    if (normalized.length === 0) {
-      return fallbackValidationResults(candidates, intent);
-    }
-
-    const missingCandidates = candidates.filter(
-      (candidate) => !normalized.some((item) => item.trailId === candidate.trailId)
-    );
-
-    if (missingCandidates.length > 0) {
-      normalized.push(...fallbackValidationResults(missingCandidates, intent));
-    }
-
-    return normalized;
-  } catch (error) {
-    console.error('[Validation Agent] Failed:', error);
-    return fallbackValidationResults(candidates, intent);
-  }
+  return fallbackValidationResults(candidates, intent);
 }
 
 // ─── Agent 4: Action Agent ────────────────────────────────────────────
@@ -820,60 +653,15 @@ export async function runActionAgent(
   backupCandidate?: TrailCandidate,
   plannerNote?: string
 ): Promise<TripPlan> {
-  const prompt = `You are the ACTION AGENT in a multi-agent outdoor planning system.
-
-Your job: Generate a comprehensive, ACTION-ORIENTED trip plan for the trail the system selected as primary.
-This trail already passed deterministic feasibility and safety gates. If plannerNote mentions elevated or alpine risk, emphasize conservative timing, gear, and turn-around judgment.
-Even if the trail is not a perfect match subjectively, you MUST still provide a realistic, usable plan based on the data available. DO NOT return "N/A" for fields; use your best professional judgment to provide estimates.
-
-${plannerNote ? `Planner note (deterministic): ${plannerNote}` : ''}
-
-User Intent:
-${JSON.stringify(intent, null, 2)}
-
-Recommended Trail:
-${JSON.stringify(topCandidate, null, 2)}
-
-Validation Results:
-${JSON.stringify(validation, null, 2)}
-
-${backupCandidate ? `Backup Trail: ${JSON.stringify(backupCandidate, null, 2)}` : 'No backup trail available.'}
-
-Return a JSON OBJECT:
-{
-  "recommendedTrailId": number,
-  "recommendedTrailName": "string",
-  "tripType": "day_hike" | "multi_day",
-  "tripLengthDays": number,
-  "whyChosen": "2-3 sentences explaining why this is THE best choice",
-  "departureTime": "HH:MM AM/PM - when to leave home",
-  "expectedReturnTime": "HH:MM AM/PM",
-  "estimatedDuration": "For day hikes: Xh Ym on trail. For multi-day trips: total trip duration like '3 days / 2 nights'",
-  "driveTime": "estimated one-way drive",
-  "dailyPlan": ["For multi-day trips, one practical itinerary line per day. For day hikes, use 1 concise outing summary line."],
-  "whatToBring": ["List of 4-6 specific items"],
-  "safetyNotes": ["2-3 specific safety warnings"],
-  "logisticsNotes": ["2-4 notes about permits, campsites, water, shuttles, or trailhead logistics"],
-  "routeNotes": "2-3 sentences about the route",
-  "weatherSummary": "Expected conditions (e.g. Partly cloudy, 55°F)",
-  "conditionsSummary": "Trail conditions assessment (e.g. Well-maintained, likely wet)",
-  "backupTrailId": number or 0,
-  "backupTrailName": "string or 'None'",
-  "backupReason": "When you might need the backup",
-  "packingChecklist": ["5-8 items for a checkbox list"],
-  "calendarTitle": "Short calendar event title",
-  "calendarDescription": "Summary for calendar event",
-  "shareableSummary": "Text summary for sharing with friends"
-}
-
-If intent.tripType is "multi_day", write this as a backpacking plan rather than a long day hike. Use realistic overnight logistics, a multi-day timeline, backpacking gear, and a trip-wide return time.
-
-Respond ONLY with valid JSON. Do not use N/A. Provide realistic values.`;
-
   try {
-    const result = await model.generateContent(prompt);
-    const text = result.response.text();
-    const plan = JSON.parse(cleanJsonResponse(text));
+    const result = await postGeminiEndpoint<{ plan: any }>('/api/gemini-action', {
+      intent,
+      topCandidate,
+      validation,
+      backupCandidate,
+      plannerNote,
+    });
+    const plan = result.plan;
     
     // Normalize array fields
     const ensureArray = (val: any) => {
@@ -892,7 +680,7 @@ Respond ONLY with valid JSON. Do not use N/A. Provide realistic values.`;
 
     return plan;
   } catch (error) {
-    console.error('[Action Agent] Failed:', error);
+    console.warn('[Action Agent] Server Gemini unavailable; using fallback plan:', error);
     return {
       recommendedTrailId: topCandidate.trailId,
       recommendedTrailName: topCandidate.trailName,

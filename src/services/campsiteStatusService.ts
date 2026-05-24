@@ -84,6 +84,8 @@ function haversineKm(
 const RIDB_MATCH_RADIUS_KM = 2.0;
 /** Max distance (km) for flagging a fire incident near a campsite. */
 const FIRE_PROXIMITY_KM = 8.0;
+/** Bound campsite-level RIDB calls so broad searches do not spam `/api/ridb`. */
+export const RIDB_CAMPSITE_DETAIL_LIMIT = 25;
 
 function nameTokens(name: string): Set<string> {
   const stop = new Set(['the', 'and', 'at', 'of', 'area', 'site', 'camp', 'campground', 'cg', 'rv']);
@@ -158,16 +160,20 @@ export async function buildCampsiteStatusesWithRidbCampsites(
   ridbFacilities: RidbFacility[],
   alerts: ForestAlerts | null,
   fetchedAt: string,
+  maxRidbFacilityDetails = RIDB_CAMPSITE_DETAIL_LIMIT,
 ): Promise<CampsiteStatus[]> {
   const statuses = buildCampsiteStatuses(edwSites, ridbFacilities, alerts, fetchedAt);
-  return enrichCampsiteStatusesWithRidbCampsites(statuses);
+  return enrichCampsiteStatusesWithRidbCampsites(statuses, maxRidbFacilityDetails);
 }
 
 export async function enrichCampsiteStatusesWithRidbCampsites(
   statuses: CampsiteStatus[],
+  maxFacilities = RIDB_CAMPSITE_DETAIL_LIMIT,
 ): Promise<CampsiteStatus[]> {
   const facilitiesById = new Map<string, RidbFacility>();
-  for (const status of statuses) {
+  const prioritizedStatuses = [...statuses].sort((a, b) => b.confidence - a.confidence);
+  for (const status of prioritizedStatuses) {
+    if (facilitiesById.size >= maxFacilities) break;
     if (status.ridbMatch?.facilityId) {
       facilitiesById.set(status.ridbMatch.facilityId, status.ridbMatch);
     }

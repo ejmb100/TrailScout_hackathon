@@ -8,9 +8,8 @@
  */
 
 const BASE_URL = '/api/ridb';
-const ridbKey = (typeof __TRAILSCOUT_RIDB_KEY__ !== 'undefined' ? __TRAILSCOUT_RIDB_KEY__ : '').trim();
 
-export const isRidbConfigured = ridbKey.length > 0;
+export const isRidbConfigured = true;
 
 export interface RidbFacility {
   facilityId: string;

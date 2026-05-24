@@ -39,7 +39,6 @@ import {
   runResearchAgent,
   runActionAgent,
   intentToLegacyPrefs,
-  isGeminiApiKeyConfigured,
   fallbackResearchCandidates,
   fallbackValidationResults,
   type IntentProfile,
@@ -276,13 +275,6 @@ export default function App() {
     e.preventDefault();
     const query = buildQuery();
     if (!query) return;
-
-    if (!isGeminiApiKeyConfigured) {
-      setError(
-        'Missing Gemini API key. Add GEMINI_API_KEY or VITE_GEMINI_API_KEY to your .env file, then restart the dev server.'
-      );
-      return;
-    }
 
     setError('');
     setScreen('workflow');

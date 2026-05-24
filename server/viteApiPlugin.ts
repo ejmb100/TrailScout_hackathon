@@ -1,5 +1,6 @@
 import type { Plugin } from 'vite';
 import { loadEnv } from 'vite';
+import { queryGeminiRoute } from './geminiProxy';
 import { queryOverpass } from './overpassProxy';
 import { buildRidbPathWithQuery, queryRidb } from './ridbProxy';
 
@@ -63,6 +64,42 @@ export function viteApiPlugin(): Plugin {
           res.end(result.text);
         })();
       });
+
+      const useGeminiRoute = (path: string, route: 'intent' | 'research' | 'action') => {
+        server.middlewares.use(path, (req, res) => {
+          if (req.method !== 'POST') {
+            res.statusCode = 405;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ error: 'Method not allowed' }));
+            return;
+          }
+
+          const chunks: Buffer[] = [];
+          req.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+          req.on('end', () => {
+            void (async () => {
+              try {
+                const bodyText = Buffer.concat(chunks).toString('utf8');
+                const body = JSON.parse(bodyText || '{}');
+                const result = await queryGeminiRoute(route, body, (env.GEMINI_API_KEY || '').trim());
+                res.statusCode = result.status;
+                res.setHeader('Content-Type', 'application/json; charset=utf-8');
+                res.setHeader('Cache-Control', 'no-store');
+                res.end(result.text);
+              } catch (error) {
+                console.error(`[gemini-${route}] Dev middleware failed:`, error);
+                res.statusCode = 502;
+                res.setHeader('Content-Type', 'application/json');
+                res.end(JSON.stringify({ error: `Gemini ${route} proxy failed`, fallbackReason: 'server_handler_error' }));
+              }
+            })();
+          });
+        });
+      };
+
+      useGeminiRoute('/api/gemini-intent', 'intent');
+      useGeminiRoute('/api/gemini-research', 'research');
+      useGeminiRoute('/api/gemini-action', 'action');
     },
   };
 }
