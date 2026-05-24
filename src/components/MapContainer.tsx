@@ -157,6 +157,7 @@ const MapContainer: React.FC<MapContainerProps> = ({
   const [showTerrain3D, setShowTerrain3D] = useState(false);
   const [showTrails, setShowTrails] = useState(true);
   const [isTopoExpanded, setIsTopoExpanded] = useState(false);
+  const [mapReady, setMapReady] = useState(false);
 
     useEffect(() => {
       const initGoogleMapInner = () => {
@@ -183,6 +184,8 @@ const MapContainer: React.FC<MapContainerProps> = ({
               position: google.maps.ControlPosition.BOTTOM_CENTER,
             },
           });
+          
+          setMapReady(true);
           
           if (!is3D) {
             if (INITIAL_MAP_TYPE === 'dark') {
@@ -272,7 +275,7 @@ const MapContainer: React.FC<MapContainerProps> = ({
     }, [trails, focusedTrailId]);
 
     useEffect(() => {
-      if (!googleMap.current) return;
+      if (!googleMap.current || !mapReady) return;
       // Clear old POI markers
       poiMarkersRef.current.forEach(m => { try { m.setMap(null); } catch {} });
       poiMarkersRef.current = [];
@@ -308,7 +311,7 @@ const MapContainer: React.FC<MapContainerProps> = ({
         });
         poiMarkersRef.current.push(marker);
       }
-    }, [poiMarkers, showTrails]);
+    }, [poiMarkers, showTrails, mapReady]);
 
     useEffect(() => {
       const map = showTrails ? googleMap.current : null;

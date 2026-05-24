@@ -117,6 +117,7 @@ const TripPlanView: React.FC<TripPlanViewProps> = ({
 
   const poiMarkers: MapMarkerData[] = buildTripPoiMarkers(multiDayItinerary, campsiteStatuses, {
     trailPath: trail.path,
+    taggedLengthKm: Number(trail.tags?.trailscout_length_km) || undefined,
   });
   const campNightCoverage = getCampNightCoverage(multiDayItinerary, tripLengthDays);
 

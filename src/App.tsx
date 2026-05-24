@@ -54,7 +54,7 @@ import { fetchApproxIpLocation, type ApproxIpLocation } from './services/ipGeoSe
 import { scoreAndFilterTrails, calculateDistance, effectiveTrailDistanceKm, computeDeterministicMatchScore } from './utils/trailScoring';
 import { fetchOfficialTrailsInBBox, getOfficialTrailCount, getDataVintage } from './services/officialTrailService';
 import { fetchCotrexTrailsInBBox, fetchLongCotrexTrailsInBBox } from './services/cotrexService';
-import { fetchCampsitesInBBox } from './services/campsiteService';
+import { fetchCampsitesInBBox, expandPathForCampsiteSearch } from './services/campsiteService';
 import { buildMultiDayRouteCandidates } from './services/routeBuilder';
 import { mergeTrailSources } from './services/trailMergeService';
 import {
@@ -1280,7 +1280,10 @@ export default function App() {
                   }
                   poiMarkers={filterCampsiteStatusesNearPathWithFallback(
                     campsiteStatuses,
-                    trails[selectedTrailIndex]?.path ?? [],
+                    expandPathForCampsiteSearch(
+                      trails[selectedTrailIndex]?.path ?? [],
+                      Number(trails[selectedTrailIndex]?.tags?.trailscout_length_km),
+                    ),
                     5,
                   ).map(cs => ({
                     lat: cs.campsite.lat,

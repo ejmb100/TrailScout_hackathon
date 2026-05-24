@@ -1,6 +1,9 @@
 import type { MultiDayItinerary } from '../planner';
 import type { CampsiteStatus } from '../services/campsiteStatusService';
-import { filterCampsiteStatusesNearPath } from '../services/campsiteStatusService';
+import {
+  filterCampsiteStatusesNearPathWithFallback,
+} from '../services/campsiteStatusService';
+import { expandPathForCampsiteSearch } from '../services/campsiteService';
 import type { TrailPoint } from '../services/osmService';
 import type { MapMarkerData } from './MapContainer';
 
@@ -18,7 +21,7 @@ function campsiteKey(lat: number, lng: number, name: string): string {
 export function buildTripPoiMarkers(
   itinerary: MultiDayItinerary | undefined,
   campsiteStatuses: CampsiteStatus[] = [],
-  options?: { trailPath?: TrailPoint[] },
+  options?: { trailPath?: TrailPoint[]; taggedLengthKm?: number },
 ): MapMarkerData[] {
   const markers: MapMarkerData[] = [];
   const used = new Set<string>();
@@ -38,10 +41,13 @@ export function buildTripPoiMarkers(
     });
   }
 
-  const trailPath = options?.trailPath ?? [];
+  const trailPath = expandPathForCampsiteSearch(
+    options?.trailPath ?? [],
+    options?.taggedLengthKm,
+  );
   const routeStatuses = trailPath.length >= 2
-    ? filterCampsiteStatusesNearPath(campsiteStatuses, trailPath, 5)
-    : campsiteStatuses;
+    ? filterCampsiteStatusesNearPathWithFallback(campsiteStatuses, trailPath, 5, 50)
+    : campsiteStatuses.slice(0, 50);
 
   for (const cs of routeStatuses) {
     if (cs.campsite.siteType === 'trailhead') continue;

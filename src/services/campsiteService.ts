@@ -220,12 +220,13 @@ export function getCampsitesAlongTrail(
 ): TrailCampsite[] {
   if (path.length < 2) return [];
 
+  const searchPath = expandPathForCampsiteSearch(path);
   const maxOff = options?.maxOffsetKm ?? MAX_OFFSET_KM;
   const includeTrailheads = options?.includeTruilheads ?? true;
-  const cumDist = cumulativeDistances(path);
+  const cumDist = cumulativeDistances(searchPath);
 
   let minLat = 90, maxLat = -90, minLng = 180, maxLng = -180;
-  for (const p of path) {
+  for (const p of searchPath) {
     if (p.lat < minLat) minLat = p.lat;
     if (p.lat > maxLat) maxLat = p.lat;
     if (p.lng < minLng) minLng = p.lng;
@@ -240,7 +241,7 @@ export function getCampsitesAlongTrail(
     if (!includeTrailheads && site.siteType === 'trailhead') continue;
     if (site.lat < minLat || site.lat > maxLat || site.lng < minLng || site.lng > maxLng) continue;
 
-    const { trailKm, offsetKm } = snapToPath(site, path, cumDist);
+    const { trailKm, offsetKm } = snapToPath(site, searchPath, cumDist);
     if (offsetKm <= maxOff) {
       results.push({ ...site, trailKm, offsetKm });
     }
@@ -277,6 +278,94 @@ export function filterCampsitesNearPath(
   maxOffsetKm = 5
 ): Campsite[] {
   if (path.length < 2) return sites;
-  const cumDist = cumulativeDistances(path);
-  return sites.filter((site) => snapToPath(site, path, cumDist).offsetKm <= maxOffsetKm);
+  const searchPath = expandPathForCampsiteSearch(path);
+  const cumDist = cumulativeDistances(searchPath);
+  return sites.filter((site) => snapToPath(site, searchPath, cumDist).offsetKm <= maxOffsetKm);
+}
+
+/**
+ * COTREX and other sources often ship simplified geometry (two endpoints or a short
+ * polyline) while authoritative length tags describe the full route. Densify the
+ * corridor used for campsite proximity so markers are not filtered against a tiny segment.
+ */
+export function expandPathForCampsiteSearch(
+  path: TrailPoint[],
+  taggedLengthKm?: number
+): TrailPoint[] {
+  if (path.length < 2) return path;
+
+  const geomKm = trailLengthKm(path);
+  const tagged = Number.isFinite(taggedLengthKm) && taggedLengthKm! > 0 ? taggedLengthKm! : geomKm;
+  const endpointSpanKm = haversineKm(path[0], path[path.length - 1]);
+
+  // Geometry already covers most of the tagged route.
+  if (geomKm >= tagged * 0.45 || endpointSpanKm >= tagged * 0.45) {
+    return path.length >= 8 ? path : densifyPath(path, Math.max(geomKm, endpointSpanKm));
+  }
+
+  // Endpoints sit too close together for the tagged distance — search a padded bbox instead.
+  if (endpointSpanKm < Math.max(tagged * 0.25, 3)) {
+    const padKm = Math.min(Math.max(tagged * 0.35, 5), 30);
+    const padDeg = padKm / 111;
+    let minLat = Infinity;
+    let maxLat = -Infinity;
+    let minLng = Infinity;
+    let maxLng = -Infinity;
+    for (const point of path) {
+      minLat = Math.min(minLat, point.lat);
+      maxLat = Math.max(maxLat, point.lat);
+      minLng = Math.min(minLng, point.lng);
+      maxLng = Math.max(maxLng, point.lng);
+    }
+    minLat -= padDeg;
+    maxLat += padDeg;
+    minLng -= padDeg;
+    maxLng += padDeg;
+    return [
+      { lat: minLat, lng: minLng },
+      { lat: minLat, lng: maxLng },
+      { lat: maxLat, lng: maxLng },
+      { lat: maxLat, lng: minLng },
+      { lat: minLat, lng: minLng },
+    ];
+  }
+
+  return densifyPath(path, Math.max(endpointSpanKm, geomKm, tagged * 0.5, 2));
+}
+
+function densifyPath(path: TrailPoint[], spanKm: number): TrailPoint[] {
+  const steps = Math.min(Math.max(Math.ceil(spanKm), 4), 160);
+  const start = path[0];
+  const end = path[path.length - 1];
+  const expanded: TrailPoint[] = [];
+
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    expanded.push({
+      lat: start.lat + t * (end.lat - start.lat),
+      lng: start.lng + t * (end.lng - start.lng),
+    });
+  }
+
+  return expanded;
+}
+
+export function nearestCampsitesToPath(
+  sites: Campsite[],
+  path: TrailPoint[],
+  limit = 40
+): Campsite[] {
+  if (path.length < 2 || sites.length === 0) return sites.slice(0, limit);
+
+  const searchPath = expandPathForCampsiteSearch(path);
+  const cumDist = cumulativeDistances(searchPath);
+
+  return [...sites]
+    .map((site) => ({
+      site,
+      offsetKm: snapToPath(site, searchPath, cumDist).offsetKm,
+    }))
+    .sort((a, b) => a.offsetKm - b.offsetKm)
+    .slice(0, limit)
+    .map((entry) => entry.site);
 }
