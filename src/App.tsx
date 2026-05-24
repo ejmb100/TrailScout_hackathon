@@ -310,23 +310,43 @@ export default function App() {
       setAgentStage('intent');
       const rawProfile = await runIntentAgent(query);
 
-      // Override trip type / days from the explicit UI selector
-      const isMultiDay = tripMode === 'multi';
+      // Respect explicit UI multi-day selection, but do not downgrade natural-language
+      // multi-day intent (e.g. "four-day hiking trail") to a day hike just because the
+      // segmented control was left on its default.
+      const isMultiDay = tripMode === 'multi' || rawProfile.tripType === 'multi_day' || rawProfile.overnightRequired === true || rawProfile.tripLengthDays > 1;
       const profile: typeof rawProfile = isMultiDay
         ? (() => {
-            const days = tripDays;
+            const days = tripMode === 'multi'
+              ? Math.max(tripDays, rawProfile.tripLengthDays || 1)
+              : Math.max(rawProfile.tripLengthDays || rawProfile.durationDays || 2, 2);
             const dailyKm = Math.max(rawProfile.dailyDistanceKm, 12);
             const totalKm = dailyKm * days;
             return {
               ...rawProfile,
+              activity: 'backpacking' as const,
               tripType: 'multi_day' as const,
               tripLengthDays: days,
+              durationDays: days,
+              overnightRequired: true,
+              campsiteSupportRequired: true,
+              permitCheckRequired: true,
+              seasonalityCheckRequired: true,
+              snowRiskCheckRequired: rawProfile.snowRiskCheckRequired ?? true,
+              accessCheckRequired: true,
               dailyDistanceKm: dailyKm,
               searchDistanceKm: totalKm,
               maxDistanceKm: Math.max(rawProfile.maxDistanceKm, totalKm),
             };
           })()
-        : { ...rawProfile, tripType: 'day_hike' as const, tripLengthDays: 1 };
+        : {
+            ...rawProfile,
+            activity: rawProfile.activity ?? 'hiking',
+            tripType: 'day_hike' as const,
+            tripLengthDays: 1,
+            durationDays: 1,
+            overnightRequired: false,
+            campsiteSupportRequired: false,
+          };
       console.info('[TrailScout] trip mode override:', { tripMode, tripDays, tripType: profile.tripType, searchDistanceKm: profile.searchDistanceKm });
 
       setIntentProfile(profile);
@@ -1313,6 +1333,7 @@ export default function App() {
                     rank={idx}
                     isSelected={selectedTrailIndex === idx}
                     targetMaxKm={intentProfile?.maxDistanceKm}
+                    regionHint={intentProfile?.estimatedRegionName || intentProfile?.location}
                     onSelect={() => {
                       if (idx !== selectedTrailIndex) {
                         setSelectedTrailIndex(idx);

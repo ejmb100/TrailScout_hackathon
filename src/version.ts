@@ -1,1 +1,1 @@
-export const APP_BUILD_LABEL = 'campsite-markers-v2';
+export const APP_BUILD_LABEL = 'audit-source-v1';

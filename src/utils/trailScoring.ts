@@ -1,6 +1,7 @@
 import { TrailData } from '../services/osmService';
 import { RecommendationPreferences, type IntentProfile } from '../services/geminiService';
 import { estimateEffort, type EffortEstimate } from '../planner/effort';
+import { trailSourceConfidence } from './sourceAttribution';
 
 /**
  * Best-effort scoring utility to rank OSM trails based on user preferences.
@@ -227,13 +228,16 @@ export function computeDeterministicMatchScore(
   }
   tagScore = Math.min(20, tagScore);
 
-  // ── Source quality (0–15) ──
-  let sourceScore = 5;
+  // ── Source quality, access and freshness proxy (0–15) ──
+  let sourceScore = Math.round((trailSourceConfidence(trail) / 100) * 12);
   const src = tags.trailscout_source ?? '';
-  if (src === 'assembled_route') sourceScore = 14;
-  else if (src.includes('usfs_nfs') || src === 'cotrex') sourceScore = 15;
-  else if (src === 'osm_relation') sourceScore = 12;
-  else if (src === 'osm_way_segment') sourceScore = 7;
+  if (src === 'assembled_route') sourceScore = Math.max(sourceScore, 10);
+  else if (src.includes('usfs_nfs') || src === 'cotrex') sourceScore = Math.max(sourceScore, 13);
+  else if (src === 'osm_relation') sourceScore = Math.max(sourceScore, 10);
+  else if (src === 'osm_way_segment') sourceScore = Math.max(sourceScore, 6);
+  if (tags.access && tags.access !== 'private') sourceScore += 1;
+  if (tags.url || tags.source) sourceScore += 1;
+  sourceScore = Math.min(15, sourceScore);
 
   const total = Math.round(Math.min(100, Math.max(5, distScore + effortScore + tagScore + sourceScore)));
   return total;

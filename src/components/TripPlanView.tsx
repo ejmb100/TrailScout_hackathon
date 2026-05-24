@@ -40,6 +40,9 @@ import { getDataVintage } from '../services/officialTrailService';
 import MapContainer from './MapContainer';
 import { type MapMarkerData } from './MapContainer';
 import { buildTripPoiMarkers } from './tripPoiMarkers';
+import { buildExternalTrailLinks } from '../utils/externalTrailLinks';
+import { buildTrailSourceAttribution } from '../utils/sourceAttribution';
+import ExternalTrailLinks from './ExternalTrailLinks';
 
 // Same curated images as ResultCard
 const trailImages = [
@@ -119,6 +122,11 @@ const TripPlanView: React.FC<TripPlanViewProps> = ({
     trailPath: trail.path,
     taggedLengthKm: Number(trail.tags?.trailscout_length_km) || undefined,
   });
+  const externalLinks = buildExternalTrailLinks(
+    trail,
+    intentProfile?.estimatedRegionName || intentProfile?.location,
+  );
+  const sourceAttribution = buildTrailSourceAttribution(trail);
   const campNightCoverage = getCampNightCoverage(multiDayItinerary, tripLengthDays);
 
   const nearestAirport = travelPlan?.nearestAirports[0];
@@ -360,6 +368,7 @@ END:VCALENDAR`;
               <h1 className="font-display text-3xl md:text-4xl font-bold text-offwhite mb-2">
                 {trail.name || 'Unnamed Trail'}
               </h1>
+              <ExternalTrailLinks links={externalLinks} className="mb-2" />
               <p className="text-offwhite/70 text-sm">{plan.whyChosen}</p>
             </div>
           </div>
@@ -403,6 +412,7 @@ END:VCALENDAR`;
               <h1 className="font-display text-3xl md:text-5xl font-bold text-offwhite mb-2">
                 {trail.name || 'Unnamed Trail'}
               </h1>
+              <ExternalTrailLinks links={externalLinks} className="mb-2" />
               <p className="text-offwhite/70 text-sm md:text-base max-w-4xl">{plan.whyChosen}</p>
               <p className="text-[11px] text-offwhite/40 mt-3">
                 Full-width backpacking map is focused on the selected trail and planned camp nights.
@@ -419,10 +429,28 @@ END:VCALENDAR`;
       {(() => {
         const isUsfs = (trail.tags.trailscout_source ?? '').includes('usfs_nfs');
         const wilderness = trail.tags.wilderness_name;
-        if (!isUsfs && !wilderness) return null;
         const vintage = isUsfs ? getDataVintage() : null;
         return (
           <div className="mb-6 space-y-2">
+            {sourceAttribution.length > 0 && (
+              <div className="flex items-start gap-3 glass-bright border border-teal/25 rounded-2xl px-4 py-3 text-left">
+                <Shield className="w-5 h-5 text-teal shrink-0 mt-0.5" />
+                <div>
+                  <div className="text-[10px] font-bold text-teal uppercase tracking-wider mb-0.5">
+                    Source attribution
+                  </div>
+                  <p className="text-[11px] text-offwhite/60 leading-snug">
+                    Primary: {sourceAttribution[0].name} · confidence {sourceAttribution[0].confidence}%.
+                    {sourceAttribution.length > 1 && ` Supporting: ${sourceAttribution.slice(1).map((s) => s.name).join(', ')}.`}
+                  </p>
+                  {sourceAttribution.flatMap((s) => s.warnings).slice(0, 2).map((warning, idx) => (
+                    <p key={idx} className="text-[10px] text-amber/75 leading-snug mt-1">
+                      {warning}
+                    </p>
+                  ))}
+                </div>
+              </div>
+            )}
             {isUsfs && vintage && (
               <div className="flex items-start gap-3 glass-bright border border-amber/25 rounded-2xl px-4 py-3 text-left">
                 <Shield className="w-5 h-5 text-amber shrink-0 mt-0.5" />

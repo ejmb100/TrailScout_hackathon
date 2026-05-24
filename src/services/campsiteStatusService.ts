@@ -12,7 +12,7 @@
  */
 
 import type { Campsite, TrailCampsite } from './campsiteService';
-import { filterCampsitesNearPath, nearestCampsitesToPath, type Campsite } from './campsiteService';
+import { filterCampsitesNearPath, nearestCampsitesToPath } from './campsiteService';
 import type { TrailPoint } from './osmService';
 import type { RidbFacility } from './recreationGovService';
 import type { ForestAlerts, FireIncident } from './forestAlertService';

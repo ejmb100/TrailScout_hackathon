@@ -175,6 +175,13 @@ export function assessSafety(
   } else if (seasonalSnowRisk === 'moderate') {
     tier = worseTier(tier, 'elevated');
     warnings.push('Colorado high-country shoulder-season conditions may include lingering or early snow/ice, especially on north-facing slopes and passes. Difficulty may be higher than the nominal trail rating; carry traction if current reports indicate snow.');
+  } else if (
+    requestedMonth === 7 &&
+    /colorado|rocky|san juan|front range/i.test(`${intent.location} ${intent.estimatedRegionName}`) &&
+    approximateMaxElevationM(trail) != null &&
+    (approximateMaxElevationM(trail) ?? 0) >= 3200
+  ) {
+    warnings.push('July is usually peak season, but Colorado high-elevation routes can still have lingering snowfields, storm damage, or closed access roads. Verify current land-manager conditions before departure.');
   }
 
   if (tMin != null && tMin < -5) {
@@ -210,6 +217,22 @@ export function assessSafety(
     if (intent.tripType === 'multi_day') {
       tier = worseTier(tier, 'elevated');
     }
+  }
+
+  if (intent.tripType === 'multi_day' || intent.permitCheckRequired) {
+    warnings.push('Permit requirements may apply for overnight travel, wilderness areas, parking, or quota zones. Verify with the official land manager before departure.');
+  }
+
+  if (intent.campsiteSupportRequired || intent.tripType === 'multi_day') {
+    warnings.push('Campsite availability and legal overnight locations should be confirmed before departure; public datasets may be incomplete or stale.');
+  }
+
+  if (intent.seasonalityCheckRequired) {
+    warnings.push('This recommendation uses open/public data and coarse seasonality signals; check current trail, weather, fire, and closure reports before committing.');
+  }
+
+  if (intent.accessCheckRequired && !tags.access) {
+    assumptions.push('Trail access status was not tagged in the primary source.');
   }
 
   return { tier, blockingFindings, warnings, assumptions };

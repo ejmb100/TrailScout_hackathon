@@ -17,6 +17,9 @@ import type { PlannerScoredCandidate } from '../planner';
 import { estimateEffort, effortDifficultyTier, effortTierColor } from '../planner';
 import type { TrailData } from '../services/osmService';
 import { calculateDistance } from '../utils/trailScoring';
+import { buildExternalTrailLinks } from '../utils/externalTrailLinks';
+import { buildTrailSourceAttribution } from '../utils/sourceAttribution';
+import ExternalTrailLinks from './ExternalTrailLinks';
 
 const trailImages = [
   'https://images.unsplash.com/photo-1551632811-561732d1e306?auto=format&fit=crop&q=80&w=640&h=896',
@@ -36,6 +39,8 @@ interface TrailResultCardProps {
   isSelected: boolean;
   /** User's desired hike length from intent (km). */
   targetMaxKm?: number;
+  /** Region label for outbound trail search links. */
+  regionHint?: string;
   onSelect: () => void;
 }
 
@@ -61,10 +66,14 @@ const TrailResultCard: React.FC<TrailResultCardProps> = ({
   rank,
   isSelected,
   targetMaxKm,
+  regionHint,
   onSelect,
 }) => {
   const distKm = calculateDistance(trail.path);
   const distMi = (distKm * 0.621371).toFixed(1);
+  const externalLinks = buildExternalTrailLinks(trail, regionHint);
+  const sourceAttribution = buildTrailSourceAttribution(trail);
+  const primarySource = sourceAttribution[0];
   const imageUrl = trailImages[rank % trailImages.length];
   const fit = validation ? fitColors[validation.overallFit] || fitColors.good : fitColors.good;
   const gatedOut = planner && !planner.eligible;
@@ -163,6 +172,12 @@ const TrailResultCard: React.FC<TrailResultCardProps> = ({
               </>
             )}
           </p>
+
+          {primarySource && (
+            <p className="text-[8px] text-offwhite/35 text-center leading-tight px-1">
+              Source: {primarySource.name} · confidence {primarySource.confidence}%
+            </p>
+          )}
 
           {/* 2×2 stats */}
           <div className="grid grid-cols-2 gap-1 text-[8px] sm:text-[9px]">
@@ -276,6 +291,8 @@ const TrailResultCard: React.FC<TrailResultCardProps> = ({
               ))}
             </div>
           )}
+
+          <ExternalTrailLinks links={externalLinks} stopPropagation className="justify-center" />
 
           <div
             className={`mt-auto flex items-center justify-between gap-1 pt-1.5 border-t ${

@@ -21,11 +21,21 @@ export interface BoundingBox {
 export type TripType = 'day_hike' | 'multi_day';
 
 export interface IntentProfile {
+  activity?: 'hiking' | 'backpacking';
   location: string;
   date: string;
+  month?: string;
   difficulty: 'easy' | 'moderate' | 'hard' | 'expert';
   tripType: TripType;
   tripLengthDays: number;
+  durationDays?: number;
+  overnightRequired?: boolean;
+  routeType?: 'loop' | 'out_and_back' | 'point_to_point' | 'unspecified';
+  campsiteSupportRequired?: boolean;
+  permitCheckRequired?: boolean;
+  seasonalityCheckRequired?: boolean;
+  snowRiskCheckRequired?: boolean;
+  accessCheckRequired?: boolean;
   maxDistanceKm: number;
   dailyDistanceKm: number;
   searchDistanceKm: number;
@@ -140,6 +150,23 @@ function inferTripLengthDays(raw: Record<string, unknown>, locationHint?: string
     return clamp(Number(exact[1]), 1, 14);
   }
 
+  const wordDays: Record<string, number> = {
+    one: 1,
+    two: 2,
+    three: 3,
+    four: 4,
+    five: 5,
+    six: 6,
+    seven: 7,
+    eight: 8,
+    nine: 9,
+    ten: 10,
+  };
+  const word = text.match(/\b(one|two|three|four|five|six|seven|eight|nine|ten)[-\s]*(?:day|night)\b/);
+  if (word) {
+    return clamp(wordDays[word[1]], 1, 14);
+  }
+
   if (/\bovernight\b/.test(text)) return 2;
   if (/\bbackpack(?:ing)?\b/.test(text)) return 2;
   return 1;
@@ -155,6 +182,35 @@ function inferTripType(raw: Record<string, unknown>, tripLengthDays: number, loc
 
   if (raw.tripType === 'multi_day') return 'multi_day';
   return 'day_hike';
+}
+
+function inferActivity(tripType: TripType, locationHint?: string): IntentProfile['activity'] {
+  const text = String(locationHint || '').toLowerCase();
+  if (tripType === 'multi_day' || /\bbackpack(?:ing)?\b|\bovernight\b|\btwo-night\b|\b\d+\s*night\b/.test(text)) {
+    return 'backpacking';
+  }
+  return 'hiking';
+}
+
+function inferRouteType(raw: unknown, locationHint?: string): NonNullable<IntentProfile['routeType']> {
+  if (raw === 'loop' || raw === 'out_and_back' || raw === 'point_to_point' || raw === 'unspecified') return raw;
+  const text = String(locationHint || '').toLowerCase();
+  if (/\bloop\b/.test(text)) return 'loop';
+  if (/\bout[- ]?and[- ]?back\b/.test(text)) return 'out_and_back';
+  if (/\bpoint[- ]?to[- ]?point\b|\bone[- ]?way\b|\bthru\b/.test(text)) return 'point_to_point';
+  return 'unspecified';
+}
+
+function inferMonth(raw: unknown, date: string, locationHint?: string): string | undefined {
+  if (typeof raw === 'string' && raw.trim()) return raw.trim();
+  const text = `${date} ${locationHint || ''}`.toLowerCase();
+  const match = text.match(/\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\b/);
+  if (match) return match[1];
+  const iso = date.match(/^\d{4}-(\d{2})-/);
+  if (!iso) return undefined;
+  const monthIdx = Number(iso[1]) - 1;
+  const names = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+  return names[monthIdx];
 }
 
 function deriveSearchDistanceKm(
@@ -304,12 +360,25 @@ function normalizeBBox(
 
 function buildDefaultIntentProfile(reasoning: string, locationHint?: string): IntentProfile {
   const region = fallbackRegionForLocation(locationHint);
+  const tripLengthDays = inferTripLengthDays({}, locationHint);
+  const tripType = inferTripType({}, tripLengthDays, locationHint);
+  const date = 'today';
   return {
+    activity: inferActivity(tripType, locationHint),
     location: region.location,
-    date: 'today',
+    date,
+    month: inferMonth(undefined, date, locationHint),
     difficulty: 'moderate',
-    tripType: 'day_hike',
-    tripLengthDays: 1,
+    tripType,
+    tripLengthDays,
+    durationDays: tripLengthDays,
+    overnightRequired: tripType === 'multi_day',
+    routeType: inferRouteType(undefined, locationHint),
+    campsiteSupportRequired: tripType === 'multi_day',
+    permitCheckRequired: tripType === 'multi_day',
+    seasonalityCheckRequired: true,
+    snowRiskCheckRequired: /colorado|alpine|high[- ]?elevation|mountain|snow/i.test(locationHint || ''),
+    accessCheckRequired: true,
     maxDistanceKm: 10,
     dailyDistanceKm: 10,
     searchDistanceKm: 10,
@@ -346,6 +415,13 @@ function normalizeIntentProfile(raw: unknown, locationHint?: string): IntentProf
   const maxDistanceKm = clamp(parseFiniteNumber(data.maxDistanceKm) ?? fallback.maxDistanceKm, 1, 80);
   const tripLengthDays = inferTripLengthDays(data, locationHint);
   const tripType = inferTripType(data, tripLengthDays, locationHint);
+  const activity = data.activity === 'backpacking' || data.activity === 'hiking'
+    ? data.activity
+    : inferActivity(tripType, locationHint);
+  const date = typeof data.date === 'string' && data.date.trim() ? data.date.trim() : fallback.date;
+  const overnightRequired = data.overnightRequired != null
+    ? Boolean(data.overnightRequired)
+    : tripType === 'multi_day';
   const distanceTargets = deriveSearchDistanceKm(
     tripType,
     tripLengthDays,
@@ -394,11 +470,31 @@ function normalizeIntentProfile(raw: unknown, locationHint?: string): IntentProf
     : [];
 
   return {
+    activity,
     location: typeof data.location === 'string' && data.location.trim() ? data.location.trim() : region.location,
-    date: typeof data.date === 'string' && data.date.trim() ? data.date.trim() : fallback.date,
+    date,
+    month: inferMonth(data.month, date, locationHint),
     difficulty,
     tripType,
     tripLengthDays,
+    durationDays: tripLengthDays,
+    overnightRequired,
+    routeType: inferRouteType(data.routeType, locationHint),
+    campsiteSupportRequired: data.campsiteSupportRequired != null
+      ? Boolean(data.campsiteSupportRequired)
+      : overnightRequired,
+    permitCheckRequired: data.permitCheckRequired != null
+      ? Boolean(data.permitCheckRequired)
+      : overnightRequired,
+    seasonalityCheckRequired: data.seasonalityCheckRequired != null
+      ? Boolean(data.seasonalityCheckRequired)
+      : true,
+    snowRiskCheckRequired: data.snowRiskCheckRequired != null
+      ? Boolean(data.snowRiskCheckRequired)
+      : /colorado|alpine|high[- ]?elevation|mountain|snow/i.test(`${region.location} ${region.estimatedRegionName} ${locationHint || ''}`),
+    accessCheckRequired: data.accessCheckRequired != null
+      ? Boolean(data.accessCheckRequired)
+      : true,
     maxDistanceKm,
     dailyDistanceKm: distanceTargets.dailyDistanceKm,
     searchDistanceKm: distanceTargets.searchDistanceKm,
@@ -429,6 +525,8 @@ function normalizeIntentProfile(raw: unknown, locationHint?: string): IntentProf
   };
 }
 
+export { normalizeIntentProfile };
+
 // ─── Agent 1: Intent Agent ────────────────────────────────────────────
 
 export async function runIntentAgent(userRequest: string): Promise<IntentProfile> {
@@ -444,10 +542,20 @@ USER REQUEST: "${userRequest}"
 Extract and return a JSON object with these fields:
 {
   "location": "specific place/region (if not specified, pick a beautiful hiking destination)",
+  "activity": "hiking" | "backpacking",
   "date": "YYYY-MM-DD or 'today' or 'tomorrow'",
+  "month": "month name if the user names a month/season, otherwise omit or infer from date",
   "difficulty": "easy" | "moderate" | "hard" | "expert",
   "tripType": "day_hike" | "multi_day",
   "tripLengthDays": number,
+  "durationDays": number,
+  "overnightRequired": boolean,
+  "routeType": "loop" | "out_and_back" | "point_to_point" | "unspecified",
+  "campsiteSupportRequired": boolean,
+  "permitCheckRequired": boolean,
+  "seasonalityCheckRequired": boolean,
+  "snowRiskCheckRequired": boolean,
+  "accessCheckRequired": boolean,
   "maxDistanceKm": number (convert miles to km if needed. 1 mile = 1.60934 km). This is the user's desired TOTAL hike length for the outing (out-and-back, loop, or one-way as they described),
   "dailyDistanceKm": number (for multi-day trips, estimate a realistic average daily mileage in km; for day hikes it can match maxDistanceKm),
   "searchDistanceKm": number (for multi-day trips, set this to a substantial route-discovery target rather than the full trip total),
@@ -469,6 +577,7 @@ For the bbox: Make it proportional to the route-discovery target, not the full b
 If no location specified, choose a spectacular hiking destination and explain why.
 
 maxDistanceKm must reflect the full hike or backpacking trip the user asked for (e.g. "10 mile hike" -> ~16 km, "3 day backpacking trip around 30 miles" -> ~48 km). Do not understate this number.
+Multi-day hiking language such as "four-day hiking trail" or "two-night hike" implies backpacking, overnightRequired=true, campsiteSupportRequired=true, permitCheckRequired=true, seasonalityCheckRequired=true, snowRiskCheckRequired=true for mountain regions, and accessCheckRequired=true unless the user clearly says they only want day hikes.
 
 Respond ONLY with valid JSON.`;
 

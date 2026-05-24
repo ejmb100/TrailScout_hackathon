@@ -83,7 +83,7 @@ describe('buildTrainingProgram', () => {
     expect(winterized.actionItems.join(' ')).toMatch(/microspikes|traction|snow/i);
   });
 
-  it('produces a marathon-style downloadable hiking program with weekly workouts and peak day wording', () => {
+  it('produces a structured downloadable hiking program with weekly workouts and peak day wording', () => {
     const program = buildTrainingProgram({
       effort: effort(),
       distanceKm: 48,
