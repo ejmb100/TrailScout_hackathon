@@ -27,6 +27,18 @@ export interface RidbFacility {
   parentOrgId: string;
 }
 
+export interface RidbCampsite {
+  campsiteId: string;
+  facilityId: string;
+  name: string;
+  type: string;
+  loop: string;
+  useType: string;
+  accessible: boolean;
+  reservable: boolean;
+  lastUpdated: string;
+}
+
 const FACILITY_TYPE_MAP: Record<string, RidbFacility['type']> = {
   Campground: 'campground',
   'Permit Area': 'permit_area',
@@ -40,8 +52,15 @@ function stripHtml(html: string): string {
   return html.replace(/<[^>]*>/g, ' ').replace(/\s{2,}/g, ' ').trim();
 }
 
+function ridbUrl(path: string, params?: URLSearchParams): string {
+  const query = new URLSearchParams(params);
+  query.set('path', path);
+  return `${BASE_URL}?${query}`;
+}
+
 let cachedFacilities: RidbFacility[] = [];
 let cachedBBox = '';
+const cachedFacilityCampsites = new Map<string, RidbCampsite[]>();
 
 /**
  * Search RIDB for recreation facilities near a bounding box center.
@@ -76,7 +95,7 @@ export async function fetchRidbFacilities(
         offset: String(offset),
       });
 
-      const res = await fetch(`${BASE_URL}?${params}`);
+      const res = await fetch(ridbUrl('/facilities', params));
       if (!res.ok) throw new Error(`RIDB HTTP ${res.status}`);
       const data = await res.json();
       const items: unknown[] = data.RECDATA ?? [];
@@ -116,6 +135,62 @@ export async function fetchRidbFacilities(
   }
 
   return facilities;
+}
+
+function boolish(value: unknown): boolean {
+  return value === true || value === 'true' || value === 'Y' || value === 'Yes' || value === '1' || value === 1;
+}
+
+export async function fetchRidbCampsitesForFacility(facilityId: string): Promise<RidbCampsite[]> {
+  const id = facilityId.trim();
+  if (!id) return [];
+  const cached = cachedFacilityCampsites.get(id);
+  if (cached) return cached;
+
+  const campsites: RidbCampsite[] = [];
+
+  try {
+    let offset = 0;
+    let hasMore = true;
+
+    while (hasMore) {
+      const params = new URLSearchParams({
+        limit: '50',
+        offset: String(offset),
+      });
+
+      const res = await fetch(ridbUrl(`/facilities/${encodeURIComponent(id)}/campsites`, params));
+      if (!res.ok) throw new Error(`RIDB facility campsites HTTP ${res.status}`);
+      const data = await res.json();
+      const items: unknown[] = data.RECDATA ?? [];
+
+      for (const raw of items) {
+        const c = raw as Record<string, unknown>;
+        campsites.push({
+          campsiteId: String(c.CampsiteID ?? ''),
+          facilityId: String(c.FacilityID ?? id),
+          name: String(c.CampsiteName ?? '').trim(),
+          type: String(c.CampsiteType ?? '').trim(),
+          loop: String(c.Loop ?? '').trim(),
+          useType: String(c.TypeOfUse ?? '').trim(),
+          accessible: boolish(c.CampsiteAccessible),
+          reservable: boolish(c.CampsiteReservable ?? c.Reservable),
+          lastUpdated: String(c.LastUpdatedDate ?? ''),
+        });
+      }
+
+      const totalCount = data.METADATA?.RESULTS?.TOTAL_COUNT ?? 0;
+      offset += items.length;
+      hasMore = items.length > 0 && offset < totalCount;
+    }
+
+    cachedFacilityCampsites.set(id, campsites);
+    console.info(`[RIDB] fetched ${campsites.length} campsites for facility ${id}`);
+  } catch (err) {
+    console.warn(`[RIDB] facility ${id} campsites fetch failed, continuing without campsite-level data:`, err);
+  }
+
+  return campsites;
 }
 
 export function getRidbFacilities(): RidbFacility[] {

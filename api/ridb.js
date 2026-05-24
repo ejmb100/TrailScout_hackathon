@@ -2,6 +2,19 @@
 
 const BASE_URL = 'https://ridb.recreation.gov/api/v1';
 
+const ALLOWED_PATHS = [
+  /^\/facilities$/,
+  /^\/facilities\/[A-Za-z0-9_-]+\/campsites$/,
+  /^\/facilities\/[A-Za-z0-9_-]+\/media$/,
+  /^\/campsites$/,
+  /^\/facilityaddresses$/,
+  /^\/permitentrances$/,
+  /^\/recareas$/,
+  /^\/recareaaddresses$/,
+  /^\/links$/,
+  /^\/media$/,
+];
+
 async function queryRidb(pathWithQuery, apiKey) {
   if (!apiKey.trim()) {
     return {
@@ -30,13 +43,24 @@ async function queryRidb(pathWithQuery, apiKey) {
   }
 }
 
-function queryString(req) {
-  const fromUrl = req.url?.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
-  if (fromUrl) return fromUrl;
+function normalizeRidbPath(value) {
+  const raw = typeof value === 'string' && value.trim() ? value.trim() : '/facilities';
+  if (!raw.startsWith('/') || raw.includes('..') || raw.includes('//')) return null;
+  const decoded = decodeURIComponent(raw);
+  return ALLOWED_PATHS.some((pattern) => pattern.test(decoded)) ? decoded : null;
+}
 
-  const params = new URLSearchParams();
+function buildRidbPathWithQuery(req) {
+  const url = new URL(req.url || '/api/ridb', 'https://trailscout.local');
+  const path = normalizeRidbPath(url.searchParams.get('path'));
+  if (!path) return null;
+
+  const params = new URLSearchParams(url.searchParams);
+  params.delete('path');
+  params.delete('apikey');
+
   for (const [key, value] of Object.entries(req.query ?? {})) {
-    if (key === 'path') continue;
+    if (key === 'path' || key === 'apikey') continue;
     if (Array.isArray(value)) {
       for (const entry of value) params.append(key, entry);
     } else if (value != null) {
@@ -44,7 +68,7 @@ function queryString(req) {
     }
   }
   const built = params.toString();
-  return built ? `?${built}` : '';
+  return `${path}${built ? `?${built}` : ''}`;
 }
 
 /** @param {import('http').IncomingMessage & { query?: Record<string, string | string[]>, url?: string }} req @param {ApiResponse} res */
@@ -56,7 +80,13 @@ module.exports = async function handler(req, res) {
   }
 
   const apiKey = (process.env.RIDB_API_KEY || '').trim();
-  const path = '/facilities' + queryString(req);
+  const path = buildRidbPathWithQuery(req);
+
+  if (!path) {
+    res.status(400).setHeader('Content-Type', 'application/json');
+    res.send(JSON.stringify({ error: 'Unsupported RIDB path' }));
+    return;
+  }
 
   try {
     const result = await queryRidb(path, apiKey);

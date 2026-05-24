@@ -1,7 +1,7 @@
 import type { Plugin } from 'vite';
 import { loadEnv } from 'vite';
 import { queryOverpass } from './overpassProxy';
-import { queryRidb } from './ridbProxy';
+import { buildRidbPathWithQuery, queryRidb } from './ridbProxy';
 
 /** Vite dev middleware — mirrors Vercel `/api/*` routes locally. */
 export function viteApiPlugin(): Plugin {
@@ -48,9 +48,15 @@ export function viteApiPlugin(): Plugin {
         }
 
         void (async () => {
-          const query = req.url?.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
           const apiKey = (env.RIDB_API_KEY || '').trim();
-          const result = await queryRidb(`/facilities${query}`, apiKey);
+          const pathWithQuery = buildRidbPathWithQuery(req.url);
+          if (!pathWithQuery) {
+            res.statusCode = 400;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ error: 'Unsupported RIDB path' }));
+            return;
+          }
+          const result = await queryRidb(pathWithQuery, apiKey);
           res.statusCode = result.status;
           res.setHeader('Content-Type', 'application/json; charset=utf-8');
           res.setHeader('Cache-Control', 'no-store');
