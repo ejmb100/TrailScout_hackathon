@@ -19,12 +19,13 @@ export interface TrailData {
   elevationLossM?: number;
 }
 
-/** Prefer mirrors that are often less loaded than the main instance (see Overpass "too busy" HTML errors). */
-const OVERPASS_ENDPOINTS = [
-  'https://lz4.overpass-api.de/api/interpreter',
-  'https://z.overpass-api.de/api/interpreter',
-  'https://overpass-api.de/api/interpreter',
-] as const;
+/** Same-origin proxy (Vercel `/api/overpass` or Vite dev middleware) — avoids browser CORS/rate blocks. */
+const OVERPASS_PROXY_URL = '/api/overpass';
+
+/** Pause between tiled bbox requests so we do not hammer public Overpass mirrors. */
+const TILE_REQUEST_DELAY_MS = 1200;
+
+const MAX_TILE_QUEUE = 8;
 
 export interface FetchTrailsResult {
   trails: TrailData[];
@@ -113,50 +114,47 @@ export async function fetchTrailsInBBox(
 
   const body = `data=${encodeURIComponent(query)}`;
 
-  for (let i = 0; i < OVERPASS_ENDPOINTS.length; i++) {
-    const url = OVERPASS_ENDPOINTS[i];
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body,
-      });
-      const text = await response.text();
-      const trimmed = text.trim();
-      if (!trimmed.startsWith('{')) {
-        console.warn(
-          `[OSM] Overpass non-JSON from ${url} (HTTP ${response.status}):`,
-          trimmed.slice(0, 240)
-        );
-        continue;
-      }
-      const data = JSON.parse(trimmed) as unknown;
-      const remark =
-        typeof (data as any)?.remark === 'string'
-          ? String((data as any).remark)
-          : typeof (data as any)?.osm3s?.remark === 'string'
-            ? String((data as any).osm3s.remark)
-            : '';
-      if (remark && /busy|timeout|quota|rate|dispatcher/i.test(remark)) {
-        console.warn(`[OSM] Overpass JSON remark from ${url}:`, remark);
-        continue;
-      }
-      const parsed = parseOverpassResponse(data);
-      return {
-        trails: parsed.trails,
-        hadRawOsmData: parsed.hadRawOsmData,
-        rawElementCount: parsed.rawElementCount,
-        filteredOutCount: parsed.filteredOutCount,
-      };
-    } catch (error) {
-      console.error(`[OSM] Overpass request failed (${url}):`, error);
+  try {
+    const response = await fetch(OVERPASS_PROXY_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+    });
+    const text = await response.text();
+    const trimmed = text.trim();
+    if (!trimmed.startsWith('{')) {
+      console.warn(
+        `[OSM] Overpass proxy non-JSON (HTTP ${response.status}):`,
+        trimmed.slice(0, 240)
+      );
+      return { trails: [], overpassUnavailable: true };
     }
-    if (i < OVERPASS_ENDPOINTS.length - 1) {
-      await new Promise((r) => setTimeout(r, 400));
+    const data = JSON.parse(trimmed) as unknown;
+    const remark =
+      typeof (data as any)?.remark === 'string'
+        ? String((data as any).remark)
+        : typeof (data as any)?.osm3s?.remark === 'string'
+          ? String((data as any).osm3s.remark)
+          : '';
+    if (remark && /busy|timeout|quota|rate|dispatcher/i.test(remark)) {
+      console.warn('[OSM] Overpass proxy busy remark:', remark);
+      return { trails: [], overpassUnavailable: true };
     }
+    if (!response.ok) {
+      console.warn(`[OSM] Overpass proxy HTTP ${response.status}`);
+      return { trails: [], overpassUnavailable: true };
+    }
+    const parsed = parseOverpassResponse(data);
+    return {
+      trails: parsed.trails,
+      hadRawOsmData: parsed.hadRawOsmData,
+      rawElementCount: parsed.rawElementCount,
+      filteredOutCount: parsed.filteredOutCount,
+    };
+  } catch (error) {
+    console.error('[OSM] Overpass proxy request failed:', error);
+    return { trails: [], overpassUnavailable: true };
   }
-
-  return { trails: [], overpassUnavailable: true };
 }
 
 function bboxAreaDeg2({ south, west, north, east }: BBox): number {
@@ -213,7 +211,14 @@ export async function fetchTrailsWithFallback(
   let rawElementCount = 0;
   let filteredOutCount = 0;
 
+  let tileIndex = 0;
+
   while (queue.length > 0) {
+    if (tileIndex > 0) {
+      await new Promise((r) => setTimeout(r, TILE_REQUEST_DELAY_MS));
+    }
+    tileIndex += 1;
+
     const bbox = queue.shift()!;
     const result = await fetchTrailsInBBox(bbox.south, bbox.west, bbox.north, bbox.east);
     hadRawOsmData = hadRawOsmData || Boolean(result.hadRawOsmData);
@@ -230,17 +235,9 @@ export async function fetchTrailsWithFallback(
 
     if (
       !result.hadRawOsmData &&
+      !result.overpassUnavailable &&
       bboxAreaDeg2(bbox) > 0.18 &&
-      queue.length < 12
-    ) {
-      queue.push(...splitBBox(bbox));
-      continue;
-    }
-
-    if (
-      result.overpassUnavailable &&
-      bboxAreaDeg2(bbox) > 0.18 &&
-      queue.length < 12
+      queue.length < MAX_TILE_QUEUE
     ) {
       queue.push(...splitBBox(bbox));
       continue;

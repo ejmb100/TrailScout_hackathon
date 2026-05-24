@@ -428,7 +428,7 @@ export default function App() {
         const noUsableTrailData = Boolean(hadRawOsmData) && rawTrails.length === 0;
         setError(
           overpassUnavailable
-            ? 'OpenStreetMap trail data is temporarily unavailable (servers busy). Please try again in a minute.'
+            ? 'OpenStreetMap trail data is temporarily unavailable. Wait a minute, then try a smaller area or a day hike first.'
             : noUsableTrailData
               ? 'OpenStreetMap returned map data here, but TrailScout could not turn it into hike suggestions yet. Try a nearby park, town, or well-known trail region.'
               : rawTrails.length > 0
