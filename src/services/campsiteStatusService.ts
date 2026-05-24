@@ -14,7 +14,7 @@
 import type { Campsite, TrailCampsite } from './campsiteService';
 import { filterCampsitesNearPath, nearestCampsitesToPath } from './campsiteService';
 import type { TrailPoint } from './osmService';
-import type { RidbFacility } from './recreationGovService';
+import { fetchRidbCampsitesForFacility, type RidbCampsite, type RidbFacility } from './recreationGovService';
 import type { ForestAlerts, FireIncident } from './forestAlertService';
 
 // ─── Types ─────────────────────────────────────────────────────────────
@@ -38,7 +38,18 @@ export interface CampsiteStatus {
   /** When each source was last fetched or updated. */
   lastVerified: string;
   ridbMatch: RidbFacility | null;
+  ridbCampsiteSummary?: RidbCampsiteSummary;
   nearbyFire: FireIncident | null;
+}
+
+export interface RidbCampsiteSummary {
+  facilityId: string;
+  campsiteCount: number;
+  reservableCount: number;
+  walkInCount: number;
+  accessibleCount: number;
+  lastUpdated: string;
+  reservationUrl: string;
 }
 
 export interface CampsiteSource {
@@ -140,6 +151,82 @@ export function buildCampsiteStatuses(
   fetchedAt: string,
 ): CampsiteStatus[] {
   return edwSites.map(site => assessSite(site, ridbFacilities, alerts, fetchedAt));
+}
+
+export async function buildCampsiteStatusesWithRidbCampsites(
+  edwSites: Campsite[],
+  ridbFacilities: RidbFacility[],
+  alerts: ForestAlerts | null,
+  fetchedAt: string,
+): Promise<CampsiteStatus[]> {
+  const statuses = buildCampsiteStatuses(edwSites, ridbFacilities, alerts, fetchedAt);
+  return enrichCampsiteStatusesWithRidbCampsites(statuses);
+}
+
+export async function enrichCampsiteStatusesWithRidbCampsites(
+  statuses: CampsiteStatus[],
+): Promise<CampsiteStatus[]> {
+  const facilitiesById = new Map<string, RidbFacility>();
+  for (const status of statuses) {
+    if (status.ridbMatch?.facilityId) {
+      facilitiesById.set(status.ridbMatch.facilityId, status.ridbMatch);
+    }
+  }
+
+  if (facilitiesById.size === 0) return statuses;
+
+  const summaries = new Map<string, RidbCampsiteSummary>();
+  await Promise.all(
+    [...facilitiesById.values()].map(async (facility) => {
+      const campsites = await fetchRidbCampsitesForFacility(facility.facilityId);
+      summaries.set(facility.facilityId, summarizeRidbCampsites(facility, campsites));
+    }),
+  );
+
+  return statuses.map((status) => {
+    const facilityId = status.ridbMatch?.facilityId;
+    if (!facilityId) return status;
+    const summary = summaries.get(facilityId);
+    if (!summary) return status;
+
+    const sources = status.sources.map((source) =>
+      source.name === 'Recreation.gov'
+        ? {
+            ...source,
+            contributes: `${source.contributes}; campsite count/reservability (${summary.campsiteCount} sites)`,
+          }
+        : source,
+    );
+
+    return {
+      ...status,
+      ridbCampsiteSummary: summary,
+      sources,
+      confidence: Math.min(98, status.confidence + (summary.campsiteCount > 0 ? 5 : 0)),
+      lastVerified: summary.lastUpdated || status.lastVerified,
+    };
+  });
+}
+
+function summarizeRidbCampsites(
+  facility: RidbFacility,
+  campsites: RidbCampsite[],
+): RidbCampsiteSummary {
+  const latest = campsites
+    .map((site) => site.lastUpdated)
+    .filter(Boolean)
+    .sort()
+    .at(-1) || facility.lastUpdated;
+
+  return {
+    facilityId: facility.facilityId,
+    campsiteCount: campsites.length,
+    reservableCount: campsites.filter((site) => site.reservable).length,
+    walkInCount: campsites.filter((site) => !site.reservable).length,
+    accessibleCount: campsites.filter((site) => site.accessible).length,
+    lastUpdated: latest,
+    reservationUrl: facility.reservationUrl,
+  };
 }
 
 export function filterCampsiteStatusesNearPath(

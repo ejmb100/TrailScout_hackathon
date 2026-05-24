@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   buildCampsiteStatuses,
+  buildCampsiteStatusesWithRidbCampsites,
   isBlocked,
   isConditional,
   statusLabel,
@@ -59,6 +60,11 @@ function makeAlerts(overrides: Partial<ForestAlerts> = {}): ForestAlerts {
 
 const NOW = '2026-03-21T00:00:00Z';
 
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
 describe('buildCampsiteStatuses', () => {
   it('returns confirmed when RIDB match is enabled and reservable', () => {
     const site = makeSite();
@@ -70,6 +76,51 @@ describe('buildCampsiteStatuses', () => {
     expect(result[0].confidence).toBeGreaterThanOrEqual(80);
     expect(result[0].ridbMatch).not.toBeNull();
     expect(result[0].sources.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('enriches a RIDB facility match with campsite-level counts', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        RECDATA: [
+          {
+            CampsiteID: 'c1',
+            FacilityID: '12345',
+            CampsiteName: 'Site 1',
+            CampsiteReservable: true,
+            CampsiteAccessible: true,
+            LastUpdatedDate: '2026-04-01',
+          },
+          {
+            CampsiteID: 'c2',
+            FacilityID: '12345',
+            CampsiteName: 'Site 2',
+            CampsiteReservable: false,
+            CampsiteAccessible: false,
+            LastUpdatedDate: '2026-04-02',
+          },
+        ],
+        METADATA: { RESULTS: { TOTAL_COUNT: 2 } },
+      }),
+    })));
+
+    const result = await buildCampsiteStatusesWithRidbCampsites(
+      [makeSite()],
+      [makeRidb({ reservationUrl: 'https://www.recreation.gov/camping/campgrounds/12345' })],
+      makeAlerts(),
+      NOW,
+    );
+
+    expect(result[0].ridbCampsiteSummary).toMatchObject({
+      facilityId: '12345',
+      campsiteCount: 2,
+      reservableCount: 1,
+      walkInCount: 1,
+      accessibleCount: 1,
+      lastUpdated: '2026-04-02',
+      reservationUrl: 'https://www.recreation.gov/camping/campgrounds/12345',
+    });
+    expect(result[0].confidence).toBeGreaterThan(85);
   });
 
   it('returns walk_in when RIDB match is enabled but not reservable', () => {

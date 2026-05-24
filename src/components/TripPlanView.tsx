@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   MapPin,
@@ -122,6 +122,10 @@ const TripPlanView: React.FC<TripPlanViewProps> = ({
     trailPath: trail.path,
     taggedLengthKm: Number(trail.tags?.trailscout_length_km) || undefined,
   });
+  const campsiteStatusById = useMemo(
+    () => new Map((campsiteStatuses ?? []).map((status) => [status.campsite.id, status])),
+    [campsiteStatuses],
+  );
   const externalLinks = buildExternalTrailLinks(
     trail,
     intentProfile?.estimatedRegionName || intentProfile?.location,
@@ -546,6 +550,10 @@ END:VCALENDAR`;
                   {multiDayItinerary.days.map((seg) => {
                     const isLast = seg.day === multiDayItinerary.days.length;
                     const icon = isLast ? '🏁' : !seg.approvedSite ? '⚠️' : seg.day === 1 ? '🥾' : '⛺';
+                    const fusedCampsiteStatus = seg.campsite
+                      ? campsiteStatusById.get(seg.campsite.id)
+                      : undefined;
+                    const ridbSummary = fusedCampsiteStatus?.ridbCampsiteSummary;
                     return (
                       <React.Fragment key={seg.day}>
                         <TimelineItem
@@ -585,6 +593,37 @@ END:VCALENDAR`;
                                   {seg.campsiteSources && seg.campsiteSources.length > 0 && (
                                     <span className="text-[9px] text-offwhite/25 ml-1">
                                       ({seg.campsiteSources.join(' + ')})
+                                    </span>
+                                  )}
+                                  {fusedCampsiteStatus?.ridbMatch && (
+                                    <span className="text-[9px] text-teal/70 ml-1 font-semibold">
+                                      · Recreation.gov matched
+                                    </span>
+                                  )}
+                                  {ridbSummary && (
+                                    <span className="block w-full mt-1 text-[10px] text-offwhite/45 leading-relaxed">
+                                      RIDB campsites: {ridbSummary.campsiteCount}
+                                      {ridbSummary.campsiteCount > 0 && (
+                                        <>
+                                          {' '}· {ridbSummary.reservableCount} reservable
+                                          {ridbSummary.walkInCount > 0 && ` · ${ridbSummary.walkInCount} walk-in/unknown`}
+                                          {ridbSummary.accessibleCount > 0 && ` · ${ridbSummary.accessibleCount} accessible`}
+                                        </>
+                                      )}
+                                      {ridbSummary.lastUpdated && ` · updated ${ridbSummary.lastUpdated.slice(0, 10)}`}
+                                      {ridbSummary.reservationUrl && (
+                                        <>
+                                          {' '}·{' '}
+                                          <a
+                                            href={ridbSummary.reservationUrl}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="text-teal hover:text-teal/80 underline underline-offset-2"
+                                          >
+                                            reserve/check availability
+                                          </a>
+                                        </>
+                                      )}
                                     </span>
                                   )}
                                 </span>

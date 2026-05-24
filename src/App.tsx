@@ -72,7 +72,7 @@ import { buildTravelPlan, type TravelPlan } from './services/travelLogisticsServ
 import { fetchRidbFacilities } from './services/recreationGovService';
 import { fetchForestAlerts, type ForestAlerts } from './services/forestAlertService';
 import {
-  buildCampsiteStatuses,
+  buildCampsiteStatusesWithRidbCampsites,
   filterCampsiteStatusesNearPathWithFallback,
   type CampsiteStatus,
 } from './services/campsiteStatusService';
@@ -417,7 +417,12 @@ export default function App() {
       setHasOfficialTrails(authoritativeTrails.length > 0);
 
       // Build fused campsite statuses
-      const statuses = buildCampsiteStatuses(edwCampsites, ridbFacilities, alerts, new Date().toISOString());
+      const statuses = await buildCampsiteStatusesWithRidbCampsites(
+        edwCampsites,
+        ridbFacilities,
+        alerts,
+        new Date().toISOString(),
+      );
       setCampsiteStatuses(statuses);
       setForestAlerts(alerts);
       console.info(
