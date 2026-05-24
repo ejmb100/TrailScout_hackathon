@@ -87,20 +87,32 @@ export function normalizeCotrexFeature(feature: CotrexFeature): TrailData | null
   };
 }
 
-export async function fetchCotrexTrailsInBBox(
+export interface CotrexFetchOptions {
+  /** When set, only return trails at least this long (COTREX `length_mi_` field). */
+  minLengthMiles?: number;
+  maxRecords?: number;
+}
+
+async function fetchCotrexTrailsInBBoxInternal(
   south: number,
   west: number,
   north: number,
-  east: number
+  east: number,
+  options: CotrexFetchOptions = {},
 ): Promise<TrailData[]> {
   const trails: TrailData[] = [];
   let offset = 0;
   let hasMore = true;
+  const maxRecords = options.maxRecords ?? 2_000;
+  const lengthFilter =
+    options.minLengthMiles != null && options.minLengthMiles > 0
+      ? ` AND length_mi_ >= ${options.minLengthMiles}`
+      : '';
 
   try {
     while (hasMore) {
       const params = new URLSearchParams({
-        where: "hiking = 'yes' AND access <> 'private'",
+        where: `hiking = 'yes' AND access <> 'private'${lengthFilter}`,
         geometry: `${west},${south},${east},${north}`,
         geometryType: 'esriGeometryEnvelope',
         inSR: '4326',
@@ -141,12 +153,38 @@ export async function fetchCotrexTrailsInBBox(
       }
       hasMore = features.length === PAGE_SIZE || Boolean(data.exceededTransferLimit);
       offset += features.length;
-      if (features.length === 0 || offset >= 2_000) hasMore = false;
+      if (features.length === 0 || offset >= maxRecords) hasMore = false;
     }
-    console.info(`[COTREX] fetched ${trails.length} hiking trails for bbox [${south},${west},${north},${east}]`);
+    const label = options.minLengthMiles
+      ? `${trails.length} hiking trails (>= ${options.minLengthMiles} mi)`
+      : `${trails.length} hiking trails`;
+    console.info(`[COTREX] fetched ${label} for bbox [${south},${west},${north},${east}]`);
     return trails;
   } catch (err) {
     console.warn('[COTREX] fetch failed, continuing without Colorado Trail Explorer data:', err);
     return [];
   }
+}
+
+export async function fetchCotrexTrailsInBBox(
+  south: number,
+  west: number,
+  north: number,
+  east: number,
+): Promise<TrailData[]> {
+  return fetchCotrexTrailsInBBoxInternal(south, west, north, east);
+}
+
+/** Long COTREX routes for multi-day discovery (authoritative `length_mi_`, not simplified geometry). */
+export async function fetchLongCotrexTrailsInBBox(
+  south: number,
+  west: number,
+  north: number,
+  east: number,
+  minLengthMiles = 12,
+): Promise<TrailData[]> {
+  return fetchCotrexTrailsInBBoxInternal(south, west, north, east, {
+    minLengthMiles,
+    maxRecords: 500,
+  });
 }

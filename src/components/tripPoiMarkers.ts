@@ -40,7 +40,7 @@ export function buildTripPoiMarkers(
 
   const trailPath = options?.trailPath ?? [];
   const routeStatuses = trailPath.length >= 2
-    ? filterCampsiteStatusesNearPath(campsiteStatuses, trailPath, 3)
+    ? filterCampsiteStatusesNearPath(campsiteStatuses, trailPath, 5)
     : campsiteStatuses;
 
   for (const cs of routeStatuses) {

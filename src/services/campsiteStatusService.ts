@@ -158,6 +158,25 @@ export function filterCampsiteStatusesNearPath(
   return statuses.filter((status) => nearIds.has(status.campsite.id));
 }
 
+/** Widen corridor until markers appear so the map is not empty near short sampled geometry. */
+export function filterCampsiteStatusesNearPathWithFallback(
+  statuses: CampsiteStatus[],
+  path: TrailPoint[],
+  maxOffsetKm = 5,
+  maxResults = 40,
+): CampsiteStatus[] {
+  if (path.length < 2 || statuses.length === 0) {
+    return statuses.slice(0, maxResults);
+  }
+
+  for (const radius of [maxOffsetKm, maxOffsetKm * 2, maxOffsetKm * 4]) {
+    const filtered = filterCampsiteStatusesNearPath(statuses, path, radius);
+    if (filtered.length > 0) return filtered.slice(0, maxResults);
+  }
+
+  return statuses.slice(0, maxResults);
+}
+
 function monthFromName(raw: string): number | null {
   const m = raw.toLowerCase().slice(0, 3);
   const months: Record<string, number> = {

@@ -1,18 +1,36 @@
-import { queryRidb } from './lib/ridbProxy';
+/** @typedef {{ status: (code: number) => ApiResponse, setHeader: (name: string, value: string) => void, send: (body: string) => void }} ApiResponse */
 
-interface ApiRequest {
-  method?: string;
-  url?: string;
-  query?: Record<string, string | string[] | undefined>;
+const BASE_URL = 'https://ridb.recreation.gov/api/v1';
+
+async function queryRidb(pathWithQuery, apiKey) {
+  if (!apiKey.trim()) {
+    return {
+      status: 503,
+      text: JSON.stringify({ error: 'RIDB API key not configured on server' }),
+    };
+  }
+
+  const url = `${BASE_URL}${pathWithQuery}${pathWithQuery.includes('?') ? '&' : '?'}apikey=${encodeURIComponent(apiKey)}`;
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': 'TrailScout/1.0 (+https://trailscout.vercel.app)',
+      },
+    });
+    const text = await response.text();
+    return { status: response.status, text };
+  } catch (error) {
+    console.warn('[ridb-proxy] fetch failed:', error);
+    return {
+      status: 502,
+      text: JSON.stringify({ error: 'RIDB proxy request failed' }),
+    };
+  }
 }
 
-interface ApiResponse {
-  status: (code: number) => ApiResponse;
-  setHeader: (name: string, value: string) => void;
-  send: (body: string) => void;
-}
-
-function queryString(req: ApiRequest): string {
+function queryString(req) {
   const fromUrl = req.url?.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
   if (fromUrl) return fromUrl;
 
@@ -29,7 +47,8 @@ function queryString(req: ApiRequest): string {
   return built ? `?${built}` : '';
 }
 
-export default async function handler(req: ApiRequest, res: ApiResponse) {
+/** @param {import('http').IncomingMessage & { query?: Record<string, string | string[]>, url?: string }} req @param {ApiResponse} res */
+module.exports = async function handler(req, res) {
   if (req.method !== 'GET') {
     res.status(405).setHeader('Content-Type', 'application/json');
     res.send(JSON.stringify({ error: 'Method not allowed' }));
@@ -50,4 +69,4 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     res.status(502).setHeader('Content-Type', 'application/json');
     res.send(JSON.stringify({ error: 'RIDB proxy failed' }));
   }
-}
+};
