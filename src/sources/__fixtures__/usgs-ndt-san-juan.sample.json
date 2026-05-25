@@ -1,0 +1,47 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "objectid": 1538968,
+        "permanentidentifier": "tnm-stoner-creek",
+        "name": "Stoner Creek",
+        "namealternate": "Stoner Creek Trail",
+        "trailnumber": "625",
+        "trailtype": "Terra Trail",
+        "hikerpedestrian": "Y",
+        "bicycle": "N",
+        "packsaddle": "Y",
+        "motorcycle": "N",
+        "primarytrailmaintainer": "FS",
+        "lengthmiles": 2.11816604,
+        "trailsurface": "Natural",
+        "sourceoriginator": "USGS",
+        "sourceeditdate": "2025-01-15"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [-108.266445, 37.630855],
+          [-108.263, 37.634],
+          [-108.259, 37.638]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "objectid": 999,
+        "permanentidentifier": "tnm-bad-name",
+        "hikerpedestrian": "Y"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [-108.1, 37.7]
+        ]
+      }
+    }
+  ]
+}

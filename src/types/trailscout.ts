@@ -16,20 +16,35 @@ export interface SourceAttribution {
 export interface NormalizedTrail {
   id: string;
   sourceIds: string[];
+  sourceName?: string;
   name: string;
+  canonicalName?: string;
+  alternateNames?: string[];
   geometry: TrailPoint[];
+  originalGeometry?: unknown;
+  geometryType?: 'LineString' | 'MultiLineString' | 'Unknown';
   distanceKm: number;
+  lengthMiles?: number;
   elevationGainM?: number;
   elevationLossM?: number;
   minElevationM?: number;
   maxElevationM?: number;
   routeType: 'loop' | 'out_and_back' | 'point_to_point' | 'unknown';
   surface?: string;
+  trailSurface?: string;
   permittedUses: string[];
+  allowedUses?: string[];
   difficultySignals: string[];
   managingAgency?: string;
+  landManager?: string;
+  state?: string;
+  county?: string;
+  accessStatus?: string;
   sourceConfidence: number;
+  confidence?: number;
+  confidenceFields?: Record<string, number>;
   sourceAttribution: SourceAttribution[];
+  validationIssues?: string[];
   lastUpdated?: string;
 }
 

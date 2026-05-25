@@ -1,0 +1,28 @@
+{
+  "version": 0.6,
+  "elements": [
+    { "type": "node", "id": 1, "lat": 37.63086, "lon": -108.26645 },
+    { "type": "node", "id": 2, "lat": 37.634, "lon": -108.263 },
+    { "type": "node", "id": 3, "lat": 37.638, "lon": -108.259 },
+    { "type": "node", "id": 4, "lat": 37.75, "lon": -108.2 },
+    {
+      "type": "way",
+      "id": 100,
+      "nodes": [1, 2, 3],
+      "tags": {
+        "highway": "path",
+        "name": "Stoner Creek Trail",
+        "surface": "dirt",
+        "sac_scale": "hiking"
+      }
+    },
+    {
+      "type": "way",
+      "id": 101,
+      "nodes": [4],
+      "tags": {
+        "highway": "path"
+      }
+    }
+  ]
+}
