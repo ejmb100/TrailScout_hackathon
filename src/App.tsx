@@ -56,6 +56,7 @@ import { fetchCotrexTrailsInBBox, fetchLongCotrexTrailsInBBox } from './services
 import { fetchCampsitesInBBox, expandPathForCampsiteSearch } from './services/campsiteService';
 import { buildMultiDayRouteCandidates } from './services/routeBuilder';
 import { mergeTrailSources } from './services/trailMergeService';
+import { fetchIngestedTrailData, isIngestedCatalogEnabled } from './services/ingestedTrailService';
 import {
   integratePlanner,
   buildDeclinedTripPlan,
@@ -371,7 +372,7 @@ export default function App() {
       // Fetch Colorado-first COTREX, USFS trails, EDW campsites, RIDB facilities, and fire alerts in parallel.
       // COTREX substantially improves Colorado backpacking discovery because it carries statewide
       // CPW/USFS/BLM/local trail inventory with access, manager, surface, dog, elevation, and length fields.
-      const [officialTrails, cotrexTrails, longCotrexTrails, edwCampsites, ridbFacilities, alerts] = await Promise.all([
+      const [officialTrails, cotrexTrails, longCotrexTrails, ingestedTrails, edwCampsites, ridbFacilities, alerts] = await Promise.all([
         fetchOfficialTrailsInBBox(
           widenedBBox.minLat, widenedBBox.minLon, widenedBBox.maxLat, widenedBBox.maxLon
         ),
@@ -383,6 +384,14 @@ export default function App() {
               widenedBBox.minLat, widenedBBox.minLon, widenedBBox.maxLat, widenedBBox.maxLon, 12
             )
           : Promise.resolve([]),
+        fetchIngestedTrailData({
+          south: widenedBBox.minLat,
+          west: widenedBBox.minLon,
+          north: widenedBBox.maxLat,
+          east: widenedBBox.maxLon,
+          query,
+          limit: isMultiDay ? 200 : 100,
+        }),
         fetchCampsitesInBBox(
           widenedBBox.minLat, widenedBBox.minLon, widenedBBox.maxLat, widenedBBox.maxLon
         ),
@@ -396,7 +405,7 @@ export default function App() {
       const cotrexById = new Map<number, TrailData>();
       for (const trail of [...cotrexTrails, ...longCotrexTrails]) cotrexById.set(trail.id, trail);
       const allCotrexTrails = [...cotrexById.values()];
-      const authoritativeTrails = [...officialTrails, ...allCotrexTrails];
+      const authoritativeTrails = [...officialTrails, ...allCotrexTrails, ...ingestedTrails];
       const mergedSegments = mergeTrailSources(rawTrails, authoritativeTrails);
       const routeCandidates = isMultiDay
         ? buildMultiDayRouteCandidates(mergedSegments, {
@@ -418,7 +427,7 @@ export default function App() {
       setCampsiteStatuses(statuses);
       setForestAlerts(alerts);
       console.info(
-        `[TrailScout] official trails: ${officialTrails.length}, COTREX: ${cotrexTrails.length}, merged segments: ${mergedSegments.length}, ` +
+        `[TrailScout] official trails: ${officialTrails.length}, COTREX: ${cotrexTrails.length}, ingested: ${ingestedTrails.length}, merged segments: ${mergedSegments.length}, ` +
         `assembled routes: ${routeCandidates.length}, candidates: ${mergedTrails.length}, ` +
         `campsites: ${edwCampsites.length}, RIDB: ${ridbFacilities.length}, ` +
         `fire alerts: ${alerts.incidents.length} incidents, ${alerts.perimeters.length} perimeters`
@@ -444,6 +453,8 @@ export default function App() {
         region: profile.estimatedRegionName,
         rawElementCount,
         rawTrails: rawTrails.length,
+        ingestedCatalogEnabled: isIngestedCatalogEnabled,
+        ingestedTrails: ingestedTrails.length,
         scored: scored.length,
         enriched: enriched.length,
         filteredOutCount,

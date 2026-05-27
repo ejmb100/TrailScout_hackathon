@@ -1,6 +1,7 @@
 import type { Plugin } from 'vite';
 import { loadEnv } from 'vite';
 import { queryGeminiRoute } from './geminiProxy';
+import { queryIngestedTrails } from './ingestedTrailCatalogProxy';
 import { queryOverpass } from './overpassProxy';
 import { buildRidbPathWithQuery, queryRidb } from './ridbProxy';
 
@@ -63,6 +64,28 @@ export function viteApiPlugin(): Plugin {
           res.setHeader('Cache-Control', 'no-store');
           res.end(result.text);
         })();
+      });
+
+      server.middlewares.use('/api/ingested-trails', (req, res) => {
+        if (req.method !== 'GET') {
+          res.statusCode = 405;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ error: 'Method not allowed' }));
+          return;
+        }
+
+        try {
+          const result = queryIngestedTrails(req.url, server.config.root);
+          res.statusCode = result.status;
+          res.setHeader('Content-Type', 'application/json; charset=utf-8');
+          res.setHeader('Cache-Control', 'no-store');
+          res.end(result.text);
+        } catch (error) {
+          console.error('[ingested-trails] Dev middleware failed:', error);
+          res.statusCode = 502;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ trails: [], error: 'Ingested trail catalog failed' }));
+        }
       });
 
       const useGeminiRoute = (path: string, route: 'intent' | 'research' | 'action') => {

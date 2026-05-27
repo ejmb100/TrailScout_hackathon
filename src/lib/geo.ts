@@ -51,6 +51,11 @@ export function distanceMeters(a: TrailPoint, b: TrailPoint): number {
   return haversineKm(a, b) * 1000;
 }
 
+export function minDistanceToPathMeters(point: TrailPoint, path: TrailPoint[]): number {
+  if (path.length === 0) return Infinity;
+  return Math.min(...path.map((pathPoint) => distanceMeters(point, pathPoint)));
+}
+
 export function isFinitePoint(point: TrailPoint): boolean {
   return Number.isFinite(point.lat) && Number.isFinite(point.lng) && Math.abs(point.lat) <= 90 && Math.abs(point.lng) <= 180;
 }
